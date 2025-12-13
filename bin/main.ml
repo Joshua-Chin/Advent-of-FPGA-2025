@@ -41,4 +41,4 @@ let () =
   let input = load_input () in
   send_string input;
 
-  print_endline (Int.to_string (Bits.to_int !(outputs.password)))
+  printf "Part 1: %d, Part 2: %d\n" (Bits.to_int !(outputs.part1)) (Bits.to_int !(outputs.part2))

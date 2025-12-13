@@ -17,10 +17,30 @@ module I = struct
 end
 
 module O = struct
-  type 'a t = {
-    password : 'a [@bits output_bits];
-    } [@@deriving hardcaml]
+  type 'a t = { part1 : 'a; [@bits output_bits] part2 : 'a [@bits output_bits] }
+  [@@deriving hardcaml]
 end
+
+let rotate_dial dial direction magnitude =
+  let limit = of_int ~width:dial_bits 100 in
+
+  (* Logic if direction is positive *)
+  let add_raw = dial +: magnitude in
+  let add_wrapped = add_raw >=: limit in
+  let add_next = mux2 add_wrapped (add_raw -: limit) add_raw in
+
+  (* Logic if direction is negative *)
+  let sub_raw = dial -: magnitude in
+  let sub_wrapped = magnitude >: dial in
+  let sub_zeros = sub_raw ==:. 0 ||: (sub_wrapped &: ~:(dial ==:. 0)) in
+  let sub_next = mux2 sub_wrapped (sub_raw +: limit) sub_raw in
+
+  let next_pos = mux2 direction add_next sub_next in
+  let zeros = mux2 direction add_wrapped sub_zeros in
+  (next_pos, zeros)
+
+let decimal_shift current new_digit bits =
+  uresize (current *: of_int 10 ~width:4) bits +: uresize new_digit bits
 
 let create (scope : Scope.t) ({ clock; clear; data_in; data_in_valid } : _ I.t)
     : _ O.t =
@@ -40,7 +60,8 @@ let create (scope : Scope.t) ({ clock; clear; data_in; data_in_valid } : _ I.t)
     in
     Variable.reg clear_to_50 ~width:dial_bits
   in
-  let%hw_var password = Variable.reg spec ~width:output_bits in
+  let%hw_var part1 = Variable.reg spec ~width:output_bits in
+  let%hw_var part2 = Variable.reg spec ~width:output_bits in
 
   compile
     [
@@ -52,57 +73,31 @@ let create (scope : Scope.t) ({ clock; clear; data_in; data_in_valid } : _ I.t)
           when_
             (data_in >=:. Char.to_int '0' &: (data_in <=:. Char.to_int '9'))
             [
-              hundreds
-              <-- uresize (hundreds.value *: of_int 10 ~width:4) output_bits
-                  +: uresize tens.value output_bits;
+              hundreds <-- decimal_shift hundreds.value tens.value output_bits;
               tens <-- ones.value;
-              (let d = data_in -:. Char.to_int '0' in
-               ones <-- uresize d digit_bits);
+              ones <-- uresize (data_in -:. Char.to_int '0') digit_bits;
             ];
-
           (* Logic *)
           when_
             (data_in ==:. Char.to_int '\n')
-            [
-              (let rotation =
-                 uresize (tens.value *: of_int 10 ~width:4) dial_bits
-                 +: uresize ones.value dial_bits
-               in
-               let new_password = password.value +: hundreds.value in
-               if_ is_right.value
-                 [
-                   (let new_dial = dial.value +: rotation in
-                    if_ (new_dial >=:. 100)
-                      [
-                        dial <-- new_dial -:. 100;
-                        password <-- new_password +:. 1;
-                      ]
-                      [ dial <-- new_dial; password <-- new_password ]);
-                 ]
-                 [
-                   (let new_dial = dial.value -: rotation in
-                    let shift =
-                      uresize (new_dial ==:. 0) output_bits
-                      -: uresize (dial.value ==:. 0) output_bits
-                      +: uresize (new_dial ==:. -100) output_bits
-                    in
-                    if_ (new_dial <+. 0)
-                      [
-                        dial <-- new_dial +:. 100;
-                        password <-- new_password +: shift +:. 1;
-                      ]
-                      [ dial <-- new_dial; password <-- new_password +: shift ]);
-                 ]);
-                 (* Clear parser input *)
-                 hundreds <-- zero output_bits;
-                 tens <-- zero digit_bits;
-                 ones <-- zero digit_bits;
-                 
-            ];
+            (let magnitude = decimal_shift tens.value ones.value dial_bits in
+             let new_dial, hit_zero =
+               rotate_dial dial.value is_right.value magnitude
+             in
+             [
+               dial <-- new_dial;
+               when_ (new_dial ==:. 0) [ part1 <-- part1.value +:. 1 ];
+               part2
+               <-- part2.value +: hundreds.value +: uresize hit_zero output_bits;
+               (* Clear parser input *)
+               hundreds <-- zero output_bits;
+               tens <-- zero digit_bits;
+               ones <-- zero digit_bits;
+             ]);
         ];
     ];
 
-  { password = password.value }
+  { part1 = part1.value; part2 = part2.value }
 
 let hierarchical scope =
   let module Scoped = Hierarchy.In_scope (I) (O) in
