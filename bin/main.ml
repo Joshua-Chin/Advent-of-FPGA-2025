@@ -10,6 +10,16 @@ let create_sim () =
   in
   Sim.create (Day01.hierarchical scope)
 
+let load_input () =
+    let argv = Sys.get_argv () in
+    match Array.length argv with
+    | 2 ->
+        let filename = argv.(1) in
+        In_channel.read_all filename
+    | _ ->
+        eprintf "Usage: %s <filename>\n" argv.(0);
+        Stdlib.exit 1
+
 let () =
   let sim = create_sim () in
   let inputs = Cyclesim.inputs sim in
@@ -28,6 +38,7 @@ let () =
   Cyclesim.cycle sim;
   inputs.clear := Bits.gnd;
 
-  send_string "R800\n";
+  let input = load_input () in
+  send_string input;
 
   print_endline (Int.to_string (Bits.to_int !(outputs.password)))

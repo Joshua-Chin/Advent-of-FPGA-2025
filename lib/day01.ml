@@ -17,7 +17,9 @@ module I = struct
 end
 
 module O = struct
-  type 'a t = { password : 'a [@bits output_bits] } [@@deriving hardcaml]
+  type 'a t = {
+    password : 'a [@bits output_bits];
+    } [@@deriving hardcaml]
 end
 
 let create (scope : Scope.t) ({ clock; clear; data_in; data_in_valid } : _ I.t)
@@ -57,6 +59,7 @@ let create (scope : Scope.t) ({ clock; clear; data_in; data_in_valid } : _ I.t)
               (let d = data_in -:. Char.to_int '0' in
                ones <-- uresize d digit_bits);
             ];
+
           (* Logic *)
           when_
             (data_in ==:. Char.to_int '\n')
@@ -74,13 +77,14 @@ let create (scope : Scope.t) ({ clock; clear; data_in; data_in_valid } : _ I.t)
                         dial <-- new_dial -:. 100;
                         password <-- new_password +:. 1;
                       ]
-                      [ dial <-- rotation; password <-- new_password ]);
+                      [ dial <-- new_dial; password <-- new_password ]);
                  ]
                  [
                    (let new_dial = dial.value -: rotation in
                     let shift =
                       uresize (new_dial ==:. 0) output_bits
                       -: uresize (dial.value ==:. 0) output_bits
+                      +: uresize (new_dial ==:. -100) output_bits
                     in
                     if_ (new_dial <+. 0)
                       [
@@ -89,6 +93,11 @@ let create (scope : Scope.t) ({ clock; clear; data_in; data_in_valid } : _ I.t)
                       ]
                       [ dial <-- new_dial; password <-- new_password +: shift ]);
                  ]);
+                 (* Clear parser input *)
+                 hundreds <-- zero output_bits;
+                 tens <-- zero digit_bits;
+                 ones <-- zero digit_bits;
+                 
             ];
         ];
     ];
