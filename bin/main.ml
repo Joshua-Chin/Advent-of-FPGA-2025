@@ -4,11 +4,11 @@ open! Hardcaml
 open! Advent_of_fpga_2025
 
 let create_sim () =
-  let module Sim = Cyclesim.With_interface (Day01.I) (Day01.O) in
+  let module Sim = Cyclesim.With_interface (Day03.I) (Day03.O) in
   let scope =
     Scope.create ~auto_label_hierarchical_ports:true ~flatten_design:true ()
   in
-  Sim.create (Day01.hierarchical scope)
+  Sim.create (Day03.hierarchical scope)
 
 let load_input () =
     let argv = Sys.get_argv () in
