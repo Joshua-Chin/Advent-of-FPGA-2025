@@ -50,7 +50,7 @@ module FixedPatternSolver = struct
     (* Precompute constants *)
     let digits = block_size * repeats in
     let low = 10 ** (digits - 1) in
-    let high = (10 ** (digits)) - 1 in
+    let high = (10 ** digits) - 1 in
     let bits = bit_length high in
     let base = ((10 ** digits) - 1) / ((10 ** block_size) - 1) in
     let inv_base_m, inv_base_s = compute_multiply_shift base high in
@@ -97,17 +97,15 @@ module FixedPatternSolver = struct
         (* Stage 1 *)
         when_
           (in_valid &: (last >=:. low) &: (start <=:. high))
-          (let start_clamp = uresize start bits in
-           let last_clamp = uresize last bits in
-           [
-             range_lo
-             <-- mux2 (start_clamp >=:. low) start_clamp
-                   (of_int low ~width:bits);
-             range_hi
-             <-- mux2 (last_clamp <=:. high) last_clamp
-                   (of_int high ~width:bits);
-             valid1 <-- vdd;
-           ]);
+          [
+            range_lo
+            <-- mux2 (start >=:. low) (uresize start bits)
+                  (of_int low ~width:bits);
+            range_hi
+            <-- mux2 (last <=:. high) (uresize last bits)
+                  (of_int high ~width:bits);
+            valid1 <-- vdd;
+          ];
         (* Stage 2 *)
         when_ valid1.value
           [
@@ -161,11 +159,7 @@ module I = struct
 end
 
 module O = struct
-  type 'a t = {
-    part1 : 'a; [@bits output_bits]
-    part2 : 'a; [@bits output_bits]
-    valid : 'a;
-  }
+  type 'a t = { part1 : 'a; [@bits output_bits] part2 : 'a [@bits output_bits] }
   [@@deriving hardcaml]
 end
 
@@ -180,6 +174,25 @@ let parse_digit s = uresize (s -:. Char.to_int '0') digit_bits
 let decimal_shift current new_digit bits =
   uresize (current *: of_int 10 ~width:4) bits +: uresize new_digit bits
 
+let mobius n =
+  if n = 1 then 1
+  else
+    let rec f divisor n curr =
+      if divisor * divisor > n then if n > 1 then -curr else curr
+      else if n % divisor = 0 then
+        let new_n = n / divisor in
+        if new_n % divisor = 0 then 0 else f (divisor + 1) new_n (-curr)
+      else f (divisor + 1) n curr
+    in
+    f 2 n 1
+
+let precompute_terms_for_digit digit =
+  List.range ~stop:`inclusive 2 digit
+  |> List.filter ~f:(fun repeats -> digit % repeats = 0)
+  |> List.filter_map ~f:(fun repeats ->
+      let m = mobius repeats in
+      if m <> 0 then Some (-m, repeats) else None)
+
 let create (scope : Scope.t) ({ clock; clear; data_in; data_in_valid } : _ I.t)
     : _ O.t =
   ignore scope;
@@ -189,40 +202,52 @@ let create (scope : Scope.t) ({ clock; clear; data_in; data_in_valid } : _ I.t)
   let%hw_var start = Variable.reg spec ~width:range_bits in
   let%hw_var last = Variable.reg spec ~width:range_bits in
   let%hw_var in_valid = Variable.reg spec ~width:1 in
-
-  let solver_outputs =
-    List.range 2 max_digits ~stop:`inclusive ~stride:2
-    |> List.map ~f:(fun digits ->
-        let repeats = 2 in
-        let block_size = digits / repeats in
-        let solver =
-          FixedPatternSolver.hierarchical scope ~config:{ block_size; repeats }
-        in
-        solver
-          {
-            clock;
-            clear;
-            in_valid = in_valid.value;
-            start = start.value;
-            last = last.value;
-          })
+  let part1_solver_outputs, part2_solver_outputs =
+    List.range 2 max_digits ~stop:`inclusive
+    |> List.concat_map ~f:(fun digits ->
+        precompute_terms_for_digit digits |> List.map ~f:(fun x -> (digits, x)))
+    |> List.fold
+         ~init:([], ([], []))
+         ~f:(fun (p1, (p2p, p2n)) (digits, (coef, repeats)) ->
+           let block_size = digits / repeats in
+           let solver =
+             FixedPatternSolver.hierarchical scope
+               ~config:{ block_size; repeats }
+           in
+           printf "coef: %d, digits: %d, block size: %d, repeats: %d\n" coef
+             digits block_size repeats;
+           let raw_output =
+             solver
+               {
+                 clock;
+                 clear;
+                 in_valid = in_valid.value;
+                 start = start.value;
+                 last = last.value;
+               }
+           in
+           let output =
+             mux2 raw_output.out_valid raw_output.sum (zero output_bits)
+           in
+           ( (if repeats = 2 then output :: p1 else p1),
+             if coef = 1 then (output :: p2p, p2n) else (p2p, output :: p2n) ))
   in
+  let part1_sum = tree ~arity:2 ~f:(reduce ~f:( +: )) part1_solver_outputs in
 
-  let output_sum =
-    List.map solver_outputs ~f:(fun { out_valid; sum } ->
-        mux2 out_valid sum (zero output_bits))
-    |> tree ~arity:2 ~f:(reduce ~f:( +: ))
+  let part2_sum =
+    let p2p, p2n = part2_solver_outputs in
+    let pos = tree ~arity:2 ~f:(reduce ~f:( +: )) p2p in
+    let neg = tree ~arity:2 ~f:(reduce ~f:( +: )) p2n in
+    pos -: neg
   in
 
   let%hw_var part1 = Variable.reg spec ~width:output_bits in
   let%hw_var part2 = Variable.reg spec ~width:output_bits in
-  let%hw_var out_valid = Variable.reg spec ~width:1 in
   compile
     [
       in_valid <-- gnd;
-      part1 <-- part1.value +: output_sum;
-      part2 <-- part2.value +: output_sum;
-      out_valid <-- vdd;
+      part1 <-- part1.value +: part1_sum;
+      part2 <-- part2.value +: part2_sum;
       sm.switch
         [
           ( Start,
@@ -268,7 +293,7 @@ let create (scope : Scope.t) ({ clock; clear; data_in; data_in_valid } : _ I.t)
             ] );
         ];
     ];
-  { part1 = part1.value; part2 = part2.value; valid = out_valid.value }
+  { part1 = part1.value; part2 = part2.value }
 
 let hierarchical scope =
   let module Scoped = Hierarchy.In_scope (I) (O) in
