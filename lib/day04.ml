@@ -26,7 +26,7 @@ module O = struct
 end
 
 module Config = struct
-  type t = { rows : int; cols : int }
+  type 'a t = { rows : int; cols : int; initial_state : 'a Option.t }
 end
 
 module States = struct
@@ -34,13 +34,21 @@ module States = struct
   [@@deriving sexp_of, compare ~localize, enumerate]
 end
 
-let create ~config:({ rows; cols } : Config.t) (scope : Scope.t)
-    ({ clock; clear; finish; data_in; data_in_valid } : _ I.t) : _ O.t =
+let create ~config:({ rows; cols; initial_state } : _ Config.t)
+    (scope : Scope.t) ({ clock; clear; finish; data_in; data_in_valid } : _ I.t)
+    : _ O.t =
   ignore scope;
   let spec = Reg_spec.create ~clock ~clear () in
   let open Always in
   let sm = State_machine.create (module States) spec in
-  let%hw_var grid = Variable.reg spec ~width:(rows * cols) in
+  let%hw_var grid =
+    match initial_state with
+    | Some state ->
+        Variable.reg
+          (Reg_spec.override ~clear_to:state spec)
+          ~width:(rows * cols)
+    | None -> Variable.reg spec ~width:(rows * cols)
+  in
 
   let%hw_var part1 = Variable.reg spec ~width:output_bits in
   let%hw_var part1_valid = Variable.reg spec ~width:1 in
@@ -99,7 +107,26 @@ let create ~config:({ rows; cols } : Config.t) (scope : Scope.t)
     |> concat_lsb
   in
 
-  let changed = uresize (popcount (processing_grid ^: new_grid)) output_bits in
+  let pipelined_popcount xs =
+    xs
+    |> List.map ~f:(fun b -> (0, b))
+    |> tree ~arity:(2 ** 4) ~f:(fun ys ->
+        let depths, counts = List.unzip ys in
+        let add_counts a b =
+          let w = max (width a) (width b) + 1 in
+          uresize a w +: uresize b w
+        in
+        let sum = tree counts ~arity:2 ~f:(reduce ~f:add_counts) in
+        let sum_reg = Signal.reg spec sum in
+        ( Option.value_exn (List.max_elt depths ~compare:Int.compare) + 1,
+          sum_reg ))
+  in
+
+  let depth, changed =
+    pipelined_popcount (split_lsb ~part_width:1 (processing_grid ^: new_grid))
+  in
+  let changed = uresize changed output_bits in
+  let changed_valid = pipeline spec ~n:depth (sm.is Processing) in
 
   compile
     [
@@ -122,10 +149,10 @@ let create ~config:({ rows; cols } : Config.t) (scope : Scope.t)
             [
               grid <-- new_grid;
               when_
-                (part1_valid.value ==: gnd)
+                (part1_valid.value ==: gnd &: changed_valid)
                 [ part1 <-- changed; part1_valid <-- vdd ];
               part2 <-- part2.value +: changed;
-              when_ (changed ==:. 0) [ part2_valid <-- vdd ];
+              when_ (changed_valid &: (changed ==:. 0)) [ part2_valid <-- vdd ];
             ] );
         ];
     ];
@@ -136,7 +163,6 @@ let create ~config:({ rows; cols } : Config.t) (scope : Scope.t)
     part2_valid = part2_valid.value;
   }
 
-let hierarchical scope =
+let hierarchical ~config scope =
   let module Scoped = Hierarchy.In_scope (I) (O) in
-  Scoped.hierarchical ~scope ~name:"day04"
-    (create ~config:{ rows = 139; cols = 139 })
+  Scoped.hierarchical ~scope ~name:"day04" (create ~config)
