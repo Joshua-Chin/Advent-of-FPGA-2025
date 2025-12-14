@@ -1,6 +1,6 @@
 (executable
  (public_name advent-of-fpga-2025)
  (name main)
- (libraries advent_of_fpga_2025 base hardcaml)
+ (libraries advent_of_fpga_2025 base hardcaml hardcaml_waveterm)
  (preprocess
   (pps ppx_hardcaml ppx_jane)))

@@ -1,14 +1,16 @@
 open! Base
 open! Stdio
 open! Hardcaml
+open Hardcaml_waveterm
+
 open! Advent_of_fpga_2025
 
 let create_sim () =
-  let module Sim = Cyclesim.With_interface (Day03.I) (Day03.O) in
+  let module Sim = Cyclesim.With_interface (Day02.I) (Day02.O) in
   let scope =
     Scope.create ~auto_label_hierarchical_ports:true ~flatten_design:true ()
   in
-  Sim.create (Day03.hierarchical scope)
+  Sim.create (Day02.hierarchical scope)
 
 let load_input () =
     let argv = Sys.get_argv () in
@@ -22,6 +24,7 @@ let load_input () =
 
 let () =
   let sim = create_sim () in
+  let waves, sim = Waveform.create sim in
   let inputs = Cyclesim.inputs sim in
   let outputs = Cyclesim.outputs sim in
 
@@ -41,4 +44,9 @@ let () =
   let input = load_input () in
   send_string input;
 
-  printf "Part 1: %d, Part 2: %d\n" (Bits.to_int !(outputs.part1)) (Bits.to_int !(outputs.part2))
+  for _ = 0 to 10 do
+    Cyclesim.cycle sim;
+  done;
+
+  printf "Part 1: %d, Part 2: %d\n" (Bits.to_int !(outputs.part1)) (Bits.to_int !(outputs.part2));
+  Waveform.print waves ~display_width:150
