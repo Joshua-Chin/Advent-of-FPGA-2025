@@ -38,7 +38,7 @@ let create (scope : Scope.t) ({ clock; clear; data_in; data_in_valid } : _ I.t)
   let%hw_var joltages = Variable.reg spec ~width:(max_digits * output_bits) in
   let%hw_var part1 = Variable.reg spec ~width:output_bits in
   let%hw_var part2 = Variable.reg spec ~width:output_bits in
-  let joltage_list = split_lsb ~part_width:output_bits joltages.value in
+  let joltage_list = split_msb ~part_width:output_bits joltages.value in
 
   compile
     [

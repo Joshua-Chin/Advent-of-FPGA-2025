@@ -123,7 +123,7 @@ let create ~config:({ rows; cols; initial_state } : _ Config.t)
   in
 
   let depth, changed =
-    pipelined_popcount (split_lsb ~part_width:1 (processing_grid ^: new_grid))
+    pipelined_popcount (split_msb ~part_width:1 (processing_grid ^: new_grid))
   in
   let changed = uresize changed output_bits in
   let changed_valid = pipeline spec ~n:depth (sm.is Processing) in
@@ -138,10 +138,10 @@ let create ~config:({ rows; cols; initial_state } : _ Config.t)
                 [
                   when_
                     (data_in ==:. Char.to_int '@')
-                    [ grid <-- vdd @: msbs grid.value ];
+                    [ grid <-- vdd @: lsbs grid.value ];
                   when_
                     (data_in ==:. Char.to_int '.')
-                    [ grid <-- gnd @: msbs grid.value ];
+                    [ grid <-- gnd @: lsbs grid.value ];
                 ];
               when_ finish [ sm.set_next Processing ];
             ] );
