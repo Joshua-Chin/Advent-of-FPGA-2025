@@ -23,3 +23,26 @@ Day 4
 =====
 
 We read the data into registers, then process all the cell in parallel. The number of changes is calculated by a pipelined sum.
+
+Day 5
+=====
+We read the ranges into registers. To solve part 1, we compare each ingredient against all ranges simultaneously. To solve part 2, we sort the ranges as they come with insertion sort / a systolic array. Then, while simultaneously processing the ingredients, we process the sorted ranges with a ciricular shift buffer.
+
+
+------------------------
+
+TODO:
+====
+Easy:
+12: Mostly about parsing.
+7: Doable - brute force, row by row.
+9: Doable - brute force, check against every line segment in parallel.
+6: Doable - slightly annoying parsing question. row by row.
+
+Unsure:
+10a: Search space may be small enough
+
+Hard:
+11: Graph DAG problem - pointer chasing and caching. Doable, but what's the point?
+8: Graph Connectivity problem - Union Find. Doable, but seems painful.
+10b: ILP

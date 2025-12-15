@@ -16,15 +16,15 @@ let load_input () =
         Stdlib.exit 1
 
 let create_sim () =
-  let module Sim = Cyclesim.With_interface (Day05.I) (Day05.O) in
+  let module Sim = Cyclesim.With_interface (Day07.I) (Day07.O) in
   let scope =
     Scope.create ~auto_label_hierarchical_ports:true ~flatten_design:true ()
   in
-  Sim.create (Day05.hierarchical scope )
+  Sim.create (Day07.hierarchical scope)
 
 let () =
   let sim = create_sim () in
-  let waves, sim = Waveform.create sim in
+  let _waves, sim = Waveform.create sim in
   let inputs = Cyclesim.inputs sim in
   let outputs = Cyclesim.outputs sim in
 
@@ -45,4 +45,3 @@ let () =
   send_string input;
 
   printf "Part 1: %d, Part 2: %d\n" (Bits.to_int !(outputs.part1)) (Bits.to_int !(outputs.part2));
-  Waveform.print waves
