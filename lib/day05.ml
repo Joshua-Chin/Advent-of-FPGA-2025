@@ -20,7 +20,6 @@ module O = struct
     part1 : 'a; [@bits output_bits]
     part2 : 'a; [@bits output_bits]
     part2_valid : 'a;
-    ranges : 'a; [@bits 2 * output_bits * max_ranges_plus_1]
   }
   [@@deriving hardcaml]
 end
@@ -89,14 +88,27 @@ let create (scope : Scope.t) ({ clock; clear; data_in; data_in_valid } : _ I.t)
     |> tree ~arity:2 ~f:(reduce ~f:( ||: ))
   in
 
+  let get_new_end curr_end next_end =
+    mux2 (next_end >: curr_end) next_end curr_end
+  in
+  let get_delta curr_end (next_start, next_end) =
+    mux2 (next_start >: curr_end) (next_end -: next_start)
+      (mux2 (next_end >: curr_end) (next_end -: curr_end)
+         (zero (width curr_end)))
+  in
+
+  let is_sentinel (start, end_) =
+    start ==: ones (width start) &: (end_ ==: ones (width end_))
+  in
+
   let%hw_var part1 = Variable.reg spec ~width:output_bits in
   let%hw_var part2 = Variable.reg spec ~width:output_bits in
   let%hw_var part2_valid = Variable.reg spec ~width:1 in
 
+  let%hw_var curr_end = Variable.reg spec ~width:output_bits in
+
   compile
     [
-      part2 <-- part1.value;
-      part2_valid <-- gnd;
       when_ data_in_valid
         [
           sm.switch
@@ -137,8 +149,23 @@ let create (scope : Scope.t) ({ clock; clear; data_in; data_in_valid } : _ I.t)
                 ] );
             ];
         ];
+      when_ (sm.is Parse_ingredient)
+        [
+          (let ((next_start, next_end) as next_range) =
+             List.hd_exn range_list
+           in
+           if_ (is_sentinel next_range)
+             [ part2_valid <-- vdd ]
+             [
+               curr_end <-- get_new_end curr_end.value next_end;
+               part2 <-- part2.value +: get_delta curr_end.value next_range;
+               ranges
+               <-- ranges.value.:[width ranges.value - (2 * output_bits) - 1, 0]
+                   @: next_start @: next_end;
+             ]);
+        ];
     ];
-  { part1 = part1.value; part2 = part2.value; part2_valid = part2_valid.value; ranges = ranges.value }
+  { part1 = part1.value; part2 = part2.value; part2_valid = part2_valid.value }
 
 let hierarchical scope =
   let module Scoped = Hierarchy.In_scope (I) (O) in
