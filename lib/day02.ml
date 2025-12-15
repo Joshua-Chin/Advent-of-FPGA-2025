@@ -33,15 +33,6 @@ module FixedPatternSolver = struct
   let bit_length x = Int.floor_log2 x + 1
 
   (* Algorithm from Hacker's Delight *)
-  let compute_multiply_shift divisor upper_bounds =
-    let w = bit_length upper_bounds in
-    let nc = ((2 ** w) / divisor * divisor) - 1 in
-    let p = ref w in
-    while not (2 ** !p > nc * (divisor - ((2 ** !p) % divisor))) do
-      p := !p + 1
-    done;
-    let m = ((2 ** !p) + divisor - ((2 ** !p) % divisor)) / divisor in
-    (m, !p)
 
   let create ~config:({ block_size; repeats } : Config.t) (scope : Scope.t)
       ({ clock; clear; in_valid; start; last } : _ I.t) : _ O.t =
@@ -53,7 +44,7 @@ module FixedPatternSolver = struct
     let high = (10 ** digits) - 1 in
     let bits = bit_length high in
     let base = ((10 ** digits) - 1) / ((10 ** block_size) - 1) in
-    let inv_base_m, inv_base_s = compute_multiply_shift base high in
+    let inv_base_m, inv_base_s = Util.compute_multiply_shift base high in
 
     (* Declare registers *)
     let spec = Reg_spec.create ~clock ~clear () in

@@ -5,6 +5,13 @@ open Hardcaml_waveterm
 
 open! Advent_of_fpga_2025
 
+let create_sim () =
+  let module Sim = Cyclesim.With_interface (Day02.I) (Day02.O) in
+  let scope =
+    Scope.create ~auto_label_hierarchical_ports:true ~flatten_design:true ()
+  in
+  Sim.create (Day02.hierarchical scope)
+
 let load_input () =
     let argv = Sys.get_argv () in
     match Array.length argv with
@@ -14,13 +21,6 @@ let load_input () =
     | _ ->
         eprintf "Usage: %s <filename>\n" argv.(0);
         Stdlib.exit 1
-
-let create_sim () =
-  let module Sim = Cyclesim.With_interface (Day07.I) (Day07.O) in
-  let scope =
-    Scope.create ~auto_label_hierarchical_ports:true ~flatten_design:true ()
-  in
-  Sim.create (Day07.hierarchical scope)
 
 let () =
   let sim = create_sim () in
@@ -43,5 +43,9 @@ let () =
 
   let input = load_input () in
   send_string input;
+
+  for _ = 0 to 10 do
+    Cyclesim.cycle sim;
+  done;
 
   printf "Part 1: %d, Part 2: %d\n" (Bits.to_int !(outputs.part1)) (Bits.to_int !(outputs.part2));
