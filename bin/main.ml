@@ -16,16 +16,11 @@ let load_input () =
         Stdlib.exit 1
 
 let create_sim () =
-  let module Sim = Cyclesim.With_interface (Day04.I) (Day04.O) in
+  let module Sim = Cyclesim.With_interface (Day05.I) (Day05.O) in
   let scope =
     Scope.create ~auto_label_hierarchical_ports:true ~flatten_design:true ()
   in
-  let input = load_input () in
-  let bits = String.to_array input
-    |> Array.filter_map ~f:(fun c ->
-      if Char.equal c '@' then Some Signal.vdd else if Char.equal c '.' then Some Signal.gnd else None) in
-  let state = Signal.of_array bits in
-  Sim.create (Day04.hierarchical scope ~config:{rows = 139; cols = 139; initial_state = Some(state)} )
+  Sim.create (Day05.hierarchical scope )
 
 let () =
   let sim = create_sim () in
@@ -40,17 +35,13 @@ let () =
     inputs.data_in_valid := Bits.gnd
   in
 
-  let _send_string string = String.iter string ~f:send_char in
+  let send_string string = String.iter string ~f:send_char in
 
   inputs.clear := Bits.vdd;
   Cyclesim.cycle sim;
   inputs.clear := Bits.gnd;
-
-
-  inputs.finish := Bits.vdd;
-
-  while not (Bits.to_bool !(outputs.part2_valid)) do
-    Cyclesim.cycle sim;
-  done;
+  
+  let input = load_input () in
+  send_string input;
 
   printf "Part 1: %d, Part 2: %d\n" (Bits.to_int !(outputs.part1)) (Bits.to_int !(outputs.part2));
