@@ -24,7 +24,7 @@ let create_sim () =
 
 let () =
   let sim = create_sim () in
-  let _waves, sim = Waveform.create sim in
+  let waves, sim = Waveform.create sim in
   let inputs = Cyclesim.inputs sim in
   let outputs = Cyclesim.outputs sim in
 
@@ -40,8 +40,9 @@ let () =
   inputs.clear := Bits.vdd;
   Cyclesim.cycle sim;
   inputs.clear := Bits.gnd;
-  
+
   let input = load_input () in
   send_string input;
 
   printf "Part 1: %d, Part 2: %d\n" (Bits.to_int !(outputs.part1)) (Bits.to_int !(outputs.part2));
+  Waveform.print waves

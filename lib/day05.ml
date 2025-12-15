@@ -3,7 +3,7 @@ open! Hardcaml
 open! Signal
 
 let output_bits = 50 (* Up to 15 digits *)
-let max_ranges_plus_1 = 200
+let max_ranges_plus_1 = 200 + 1
 
 module I = struct
   type 'a t = {
@@ -20,6 +20,7 @@ module O = struct
     part1 : 'a; [@bits output_bits]
     part2 : 'a; [@bits output_bits]
     part2_valid : 'a;
+    ranges : 'a; [@bits 2 * output_bits * max_ranges_plus_1]
   }
   [@@deriving hardcaml]
 end
@@ -39,6 +40,10 @@ let try_parse_to_digit current new_digit =
             +: uresize (new_digit -:. Char.to_int '0') (width current.value);
       ])
 
+let rec pairwise = function
+  | x :: (y :: _ as rest) -> (x, y) :: pairwise rest
+  | _ -> []
+
 let create (scope : Scope.t) ({ clock; clear; data_in; data_in_valid } : _ I.t)
     : _ O.t =
   ignore scope;
@@ -52,7 +57,9 @@ let create (scope : Scope.t) ({ clock; clear; data_in; data_in_valid } : _ I.t)
   let%hw_var ingredient = Variable.reg spec ~width:output_bits in
 
   let%hw_var ranges =
-    Variable.reg spec ~width:(max_ranges_plus_1 * 2 * output_bits)
+    let width = max_ranges_plus_1 * 2 * output_bits in
+    let clear_to_max = Reg_spec.override ~clear_to:(ones width) spec in
+    Variable.reg clear_to_max ~width
   in
 
   let range_list =
@@ -60,6 +67,20 @@ let create (scope : Scope.t) ({ clock; clear; data_in; data_in_valid } : _ I.t)
     |> List.map ~f:(fun pair ->
         let pair_list = split_msb ~part_width:output_bits pair in
         (List.nth_exn pair_list 0, List.nth_exn pair_list 1))
+  in
+
+  let insorted (start, last) =
+    let input_packed = start @: (last +:. 1) in
+    let ranges_packed =
+      List.map range_list ~f:(fun (s, e) -> (s >: start, s @: e))
+    in
+    pairwise ((gnd, input_packed) :: ranges_packed)
+    |> List.map
+         ~f:(fun ((prev_greater, prev_packed), (curr_greater, curr_packed)) ->
+           mux2 curr_greater
+             (mux2 prev_greater prev_packed input_packed)
+             curr_packed)
+    |> concat_msb
   in
 
   let is_fresh ingredient =
@@ -95,11 +116,7 @@ let create (scope : Scope.t) ({ clock; clear; data_in; data_in_valid } : _ I.t)
                   when_
                     (data_in ==:. Char.to_int '\n')
                     [
-                      ranges
-                      <-- start.value @: (last.value +:. 1)
-                          @: ranges.value.:[( width ranges.value - 1,
-                                              width start.value
-                                              + width last.value )];
+                      ranges <-- insorted (start.value, last.value);
                       start <-- zero (width start.value);
                       last <-- zero (width last.value);
                       sm.set_next Parse_start;
@@ -121,7 +138,7 @@ let create (scope : Scope.t) ({ clock; clear; data_in; data_in_valid } : _ I.t)
             ];
         ];
     ];
-  { part1 = part1.value; part2 = part2.value; part2_valid = part2_valid.value }
+  { part1 = part1.value; part2 = part2.value; part2_valid = part2_valid.value; ranges = ranges.value }
 
 let hierarchical scope =
   let module Scoped = Hierarchy.In_scope (I) (O) in
