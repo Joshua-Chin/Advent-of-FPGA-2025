@@ -28,6 +28,9 @@ Day 5
 =====
 We read the ranges into registers. To solve part 1, we compare each ingredient against all ranges simultaneously. To solve part 2, we sort the ranges as they come with insertion sort / a systolic array. Then, while simultaneously processing the ingredients, we process the sorted ranges with a ciricular shift buffer.
 
+Day 7
+=====
+We maintain a kernel of the above 3 values (left center right), keeping the previous line in a line buffer.
 
 ------------------------
 
@@ -35,7 +38,6 @@ TODO:
 ====
 Easy:
 12: Mostly about parsing.
-7: Doable - brute force, row by row.
 9: Doable - brute force, check against every line segment in parallel.
 6: Doable - slightly annoying parsing question. row by row.
 
