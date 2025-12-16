@@ -135,4 +135,4 @@ let create (scope : Scope.t) ({ clock; clear; data_in; data_in_valid } : _ I.t)
 
 let hierarchical scope =
   let module Scoped = Hierarchy.In_scope (I) (O) in
-  Scoped.hierarchical ~scope ~name:"day05" create
+  Scoped.hierarchical ~scope ~name:"day07" create
