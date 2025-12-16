@@ -32,8 +32,6 @@ module FixedPatternSolver = struct
 
   let bit_length x = Int.floor_log2 x + 1
 
-  (* Algorithm from Hacker's Delight *)
-
   let create ~config:({ block_size; repeats } : Config.t) (scope : Scope.t)
       ({ clock; clear; in_valid; start; last } : _ I.t) : _ O.t =
     ignore scope;
