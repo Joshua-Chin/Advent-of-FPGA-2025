@@ -4,10 +4,9 @@ open! Signal
 
 let output_bits = 10 (* Up to 1000 solutions *)
 let max_tiles = 8
-let max_tile_rows = 3
-let max_tile_cols = 3
-let max_tile_size = max_tile_rows * max_tile_cols
-let max_bits = 7 (* 0 to 99 *)
+let tile_size_bits = 4 (* 0 to 9 *)
+let dim_bits = 7
+let accumulator_bits = 14
 
 module I = struct
   type 'a t = {
@@ -27,218 +26,272 @@ module O = struct
   [@@deriving hardcaml]
 end
 
-module States = struct
-  type t =
-    | Parsing_tile_newline
-    | Parsing_tile
-    | Parsing_row
-    | Parsing_col
-    | Parsing_counts_init
-    | Parsing_counts
-  [@@deriving sexp_of, compare ~localize, enumerate]
+module TileParser = struct
+  module O = struct
+    type 'a t = {
+      tile_sizes : 'a list; [@length max_tiles] [@bits tile_size_bits]
+    }
+    [@@deriving hardcaml]
+  end
+
+  let create (scope : Scope.t)
+      ({ clock; clear; data_in; data_in_valid } : _ I.t) : _ O.t =
+    ignore scope;
+    let spec = Reg_spec.create ~clock ~clear () in
+    let open Always in
+    let%hw_var current_idx =
+      Variable.reg spec ~width:(address_bits_for max_tiles)
+    in
+    let%hw_var finished = Variable.reg spec ~width:1 in
+    let%hw_var prev_newline = Variable.reg spec ~width:1 in
+    let tile_sizes =
+      List.init max_tiles ~f:(fun _ -> Variable.reg spec ~width:tile_size_bits)
+    in
+
+    compile
+      [
+        when_
+          (data_in_valid &: ( ~: ) finished.value)
+          [
+            when_ (data_in ==:. Char.to_int 'x') [ finished <-- vdd ];
+            when_
+              (data_in ==:. Char.to_int '#')
+              [
+                List.mapi tile_sizes ~f:(fun idx r ->
+                    when_ (current_idx.value ==:. idx) [ r <-- r.value +:. 1 ])
+                |> proc;
+              ];
+            if_
+              (data_in ==:. Char.to_int '\n')
+              [
+                when_ prev_newline.value
+                  [ current_idx <-- current_idx.value +:. 1 ];
+                prev_newline <-- vdd;
+              ]
+              [ prev_newline <-- gnd ];
+          ];
+      ];
+    { tile_sizes = List.map tile_sizes ~f:(fun r -> r.value) }
+
+  let hierarchical scope =
+    let module Scoped = Hierarchy.In_scope (I) (O) in
+    Scoped.hierarchical ~scope ~name:"tile_parser" create
 end
 
-let div_3 x =
-  let m, s = Util.compute_multiply_shift 3 100 in
-  let m_signal = of_int m ~width:(Util.bit_length m) in
-  uresize (srl (x *: m_signal) s) (width x - 1)
-
-let create (scope : Scope.t) ({ clock; clear; data_in; data_in_valid } : _ I.t)
-    : _ O.t =
-  ignore scope;
-  let spec = Reg_spec.create ~clock ~clear () in
-  let open Always in
-  let sm = State_machine.create (module States) spec in
-
-  (* Declare RAM *)
-  let%hw_var write_address =
-    Variable.wire ~default:(zero (address_bits_for max_tiles))
-  in
-
-  let%hw_var write_enable = Variable.wire ~default:gnd in
-  let%hw_var write_data =
-    Variable.wire ~default:(zero (Int.floor_log2 max_tile_size + 1))
-  in
-  let%hw_var read_address =
-    Variable.wire ~default:(zero (address_bits_for max_tiles))
-  in
-  let%hw_var read_enable = Variable.wire ~default:gnd in
-  let write_port =
-    {
-      Write_port.write_clock = clock;
-      write_address = write_address.value;
-      write_enable = write_enable.value;
-      write_data = write_data.value;
+module ProblemParser = struct
+  module O = struct
+    type 'a t = {
+      (* Command: New Problem *)
+      new_grid : 'a;
+      grid_rows : 'a; [@bits dim_bits]
+      grid_cols : 'a; [@bits dim_bits]
+      (* Command: Add Tile Requirement *)
+      add_tile : 'a;
+      tile_idx : 'a; [@bits address_bits_for max_tiles]
+      tile_count : 'a; [@bits dim_bits]
+      (* Command: Compute Solution *)
+      finish_problem : 'a;
     }
-  in
-  let read_port =
+    [@@deriving hardcaml]
+  end
+
+  module States = struct
+    type t = Parse_row | Parse_col | Parse_counts
+    [@@deriving sexp_of, compare ~localize, enumerate]
+  end
+
+  let create (scope : Scope.t)
+      ({ clock; clear; data_in; data_in_valid } : _ I.t) : _ O.t =
+    ignore scope;
+    let spec = Reg_spec.create ~clock ~clear () in
+    let open Always in
+    let sm = State_machine.create (module States) spec in
+
+    (* Output flags *)
+    let%hw_var new_grid = Variable.wire ~default:gnd in
+    let%hw_var add_tile = Variable.wire ~default:gnd in
+    let%hw_var finish_problem = Variable.wire ~default:gnd in
+    (* New Grid *)
+    let%hw_var grid_rows = Variable.reg spec ~width:dim_bits in
+    let%hw_var grid_cols = Variable.wire ~default:(zero dim_bits) in
+    (* New Tile *)
+    let%hw_var tile_idx =
+      Variable.reg spec ~width:(address_bits_for max_tiles)
+    in
+    let%hw_var tile_count = Variable.wire ~default:(zero dim_bits) in
+    (* Digit Parsing *)
+    let%hw_var decimal = Variable.reg spec ~width:dim_bits in
+
+    let reset = proc [ grid_rows <--. 0; tile_idx <--. 0; decimal <--. 0 ] in
+
+    let is_input c = data_in ==:. Char.to_int c in
+
+    compile
+      [
+        when_ data_in_valid
+          [
+            Util.try_parse_to_digit decimal data_in;
+            sm.switch
+              [
+                ( Parse_row,
+                  [
+                    when_ (is_input 'x')
+                      [
+                        grid_rows <-- decimal.value;
+                        decimal <--. 0;
+                        sm.set_next Parse_col;
+                      ];
+                    (* We may have attempted to parse row that is not a problems *)
+                    when_ (is_input '\n') [ reset ];
+                  ] );
+                ( Parse_col,
+                  [
+                    when_ (is_input ' ')
+                      [
+                        new_grid <-- vdd;
+                        grid_cols <-- decimal.value;
+                        decimal <--. 0;
+                        sm.set_next Parse_counts;
+                      ];
+                  ] );
+                ( Parse_counts,
+                  [
+                    when_ (is_input ' ')
+                      [
+                        add_tile <-- vdd;
+                        tile_count <-- decimal.value;
+                        decimal <--. 0;
+                        tile_idx <-- tile_idx.value +:. 1;
+                      ];
+                    when_ (is_input '\n')
+                      [
+                        add_tile <-- vdd;
+                        tile_count <-- decimal.value;
+                        finish_problem <-- vdd;
+                        reset;
+                        sm.set_next Parse_row;
+                      ];
+                  ] );
+              ];
+          ];
+      ];
     {
-      Read_port.read_clock = clock;
-      read_address = read_address.value;
-      read_enable = read_enable.value;
+      (* New grid *)
+      new_grid = new_grid.value;
+      grid_rows = grid_rows.value;
+      grid_cols = grid_cols.value;
+      (* New tile *)
+      add_tile = add_tile.value;
+      tile_idx = tile_idx.value;
+      tile_count = tile_count.value;
+      (* Finished *)
+      finish_problem = finish_problem.value;
     }
-  in
-  let q =
-    Ram.create ~name:"tile_cells" ~collision_mode:Read_before_write
-      ~size:max_tiles ~write_ports:[| write_port |] ~read_ports:[| read_port |]
-      ()
-  in
-  let ram_out = q.(0) in
 
-  (* Declare Registers *)
+  let hierarchical scope =
+    let module Scoped = Hierarchy.In_scope (I) (O) in
+    Scoped.hierarchical ~scope ~name:"problem_parser" create
+end
 
-  (* Registers for parsing *)
-  let%hw_var curr_tile_idx =
-    Variable.reg spec ~width:(address_bits_for max_tiles)
-  in
-  let%hw_var curr_tile_cells =
-    Variable.reg spec ~width:(Int.floor_log2 max_tile_size + 1)
-  in
+module Solver = struct
+  module I = struct
+    type 'a t = {
+      clock : 'a;
+      clear : 'a;
+      commands : 'a ProblemParser.O.t;
+      tile_sizes : 'a TileParser.O.t;
+    }
+    [@@deriving hardcaml]
+  end
 
-  let%hw_var rows = Variable.reg spec ~width:max_bits in
-  let%hw_var cols = Variable.reg spec ~width:max_bits in
-  let%hw_var curr_tile_count = Variable.reg spec ~width:max_bits in
+  let div_3 x =
+    let m, s = Util.compute_multiply_shift 3 100 in
+    let m_signal = of_int m ~width:(Util.bit_length m) in
+    uresize (srl (x *: m_signal) s) (width x - 1)
 
-  (* Registers for intermediate values *)
-  let%hw_var area_blocks = Variable.reg spec ~width:(2 * max_bits) in
-  let%hw_var area_cells = Variable.reg spec ~width:(2 * max_bits) in
-  let%hw_var tile_blocks = Variable.reg spec ~width:(2 * max_bits) in
-  let%hw_var tile_cells = Variable.reg spec ~width:(2 * max_bits) in
+  let create (scope : Scope.t) ({ clock; clear; commands; tile_sizes } : _ I.t)
+      : _ O.t =
+    ignore scope;
+    let spec = Reg_spec.create ~clock ~clear () in
+    let open Always in
+    (* Declare Registers *)
+    let%hw_var area_blocks = Variable.reg spec ~width:accumulator_bits in
+    let%hw_var area_cells = Variable.reg spec ~width:accumulator_bits in
+    let%hw_var tile_blocks = Variable.reg spec ~width:accumulator_bits in
+    let%hw_var tile_cells = Variable.reg spec ~width:accumulator_bits in
 
-  let%hw_var problem_ready = Variable.reg spec ~width:1 in
-
-  let%hw_var min_solution = Variable.reg spec ~width:output_bits in
-  let%hw_var max_solution = Variable.reg spec ~width:output_bits in
-
-  let is_input c = data_in ==:. Char.to_int c in
-
-  let parse_for_tile =
-    proc
-      [
-        when_ (is_input '#') [ curr_tile_cells <-- curr_tile_cells.value +:. 1 ];
-        Util.try_parse_to_digit rows data_in;
-      ]
-  in
-
-  let prepare_ram idx = proc [ read_enable <-- vdd; read_address <-- idx ] in
-
-  let handle_count =
-    let new_idx = curr_tile_idx.value +:. 1 in
-    proc
-      [
-        tile_blocks
-        <-- tile_blocks.value
-            +: uresize curr_tile_count.value (width tile_blocks.value);
-        tile_cells
-        <-- tile_cells.value
-            +: uresize
-                 (curr_tile_cells.value *: curr_tile_count.value)
-                 (width tile_cells.value);
-        prepare_ram new_idx;
-        curr_tile_idx <-- new_idx;
-        curr_tile_count <--. 0;
-      ]
-  in
-
-  compile
-    [
-      when_ data_in_valid
+    let reset =
+      proc
         [
-          sm.switch
-            [
-              ( Parsing_tile_newline,
-                [
-                  write_enable <-- gnd;
-                  if_ (is_input '\n')
-                    [
-                      write_enable <-- vdd;
-                      write_data <-- curr_tile_cells.value;
-                      write_address <-- curr_tile_idx.value;
-                      curr_tile_idx <-- curr_tile_idx.value +:. 1;
-                      curr_tile_cells <--. 0;
-                      rows <--. 0;
-                    ]
-                    [ write_enable <-- gnd; sm.set_next Parsing_tile ];
-                  parse_for_tile;
-                ] );
-              ( Parsing_tile,
-                [
-                  when_ (is_input '\n') [ sm.set_next Parsing_tile_newline ];
-                  (* If the input is `x`, we just finished parsing a row *)
-                  when_ (is_input 'x')
-                    [
-                      sm.set_next Parsing_col;
-                      curr_tile_idx <--. 0;
-                      curr_tile_cells <--. 0;
-                    ];
-                  parse_for_tile;
-                ] );
-              ( Parsing_row,
-                [
-                  when_ (is_input 'x') [ sm.set_next Parsing_col ];
-                  Util.try_parse_to_digit rows data_in;
-                ] );
-              ( Parsing_col,
-                [
-                  when_ (is_input ' ')
-                    [
-                      sm.set_next Parsing_counts_init;
-                      prepare_ram curr_tile_idx.value;
-                      area_blocks
-                      <-- uresize
-                            (div_3 rows.value *: div_3 cols.value)
-                            (width area_blocks.value);
-                      area_cells
-                      <-- uresize (rows.value *: cols.value)
-                            (width area_blocks.value);
-                      rows <--. 0;
-                      cols <--. 0;
-                    ];
-                  Util.try_parse_to_digit cols data_in;
-                ] );
-              ( Parsing_counts_init,
-                [
-                  curr_tile_cells <-- ram_out;
-                  sm.set_next Parsing_counts;
-                  Util.try_parse_to_digit curr_tile_count data_in;
-                ] );
-              ( Parsing_counts,
-                [
-                  when_ (is_input '\n')
-                    [
-                      sm.set_next Parsing_row;
-                      problem_ready <-- vdd;
-                      handle_count;
-                    ];
-                  when_ (is_input ' ')
-                    [ sm.set_next Parsing_counts_init; handle_count ];
-                  Util.try_parse_to_digit curr_tile_count data_in;
-                ] );
-            ];
-        ];
-      when_ problem_ready.value
-        [
-          problem_ready <-- gnd;
           area_blocks <--. 0;
           area_cells <--. 0;
           tile_blocks <--. 0;
           tile_cells <--. 0;
-          curr_tile_idx <--. 0;
-          if_
-            (area_blocks.value >=: tile_blocks.value)
-            [
-              min_solution <-- min_solution.value +:. 1;
-              max_solution <-- max_solution.value +:. 1;
-            ]
-            [
-              when_
-                (tile_cells.value <=: area_cells.value)
-                [ max_solution <-- max_solution.value +:. 1 ];
-            ];
-        ];
-    ];
+        ]
+    in
 
-  { min_solution = min_solution.value; max_solution = max_solution.value }
+    let%hw_var min_solution = Variable.reg spec ~width:output_bits in
+    let%hw_var max_solution = Variable.reg spec ~width:output_bits in
+
+    let tile_size = mux commands.tile_idx tile_sizes.tile_sizes in
+    let new_tile_blocks =
+      tile_blocks.value +: uresize commands.tile_count accumulator_bits
+    in
+    let new_tile_cells =
+      tile_cells.value
+      +: uresize (tile_size *: commands.tile_count) accumulator_bits
+    in
+
+    compile
+      [
+        when_ commands.new_grid
+          [
+            area_blocks
+            <-- uresize
+                  (div_3 commands.grid_rows *: div_3 commands.grid_cols)
+                  accumulator_bits;
+            area_cells
+            <-- uresize
+                  (commands.grid_rows *: commands.grid_cols)
+                  accumulator_bits;
+          ];
+        when_
+          (commands.add_tile &: ( ~: ) commands.finish_problem)
+          [ tile_blocks <-- new_tile_blocks; tile_cells <-- new_tile_cells ];
+        when_ commands.finish_problem
+          [
+            if_
+              (area_blocks.value >=: new_tile_blocks)
+              [
+                min_solution <-- min_solution.value +:. 1;
+                max_solution <-- max_solution.value +:. 1;
+              ]
+              [
+                when_
+                  (area_cells.value >=: new_tile_cells)
+                  [ max_solution <-- max_solution.value +:. 1 ];
+              ];
+            reset;
+          ];
+      ];
+
+    { min_solution = min_solution.value; max_solution = max_solution.value }
+
+  let hierarchical scope =
+    let module Scoped = Hierarchy.In_scope (I) (O) in
+    Scoped.hierarchical ~scope ~name:"solver" create
+end
+
+let create (scope : Scope.t) ({ clock; clear; data_in; data_in_valid } : _ I.t)
+    : _ O.t =
+  let tile_sizes =
+    TileParser.hierarchical scope { clock; clear; data_in; data_in_valid }
+  in
+  let commands =
+    ProblemParser.hierarchical scope { clock; clear; data_in; data_in_valid }
+  in
+
+  Solver.hierarchical scope { clock; clear; commands; tile_sizes }
 
 let hierarchical scope =
   let module Scoped = Hierarchy.In_scope (I) (O) in
