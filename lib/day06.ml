@@ -96,6 +96,15 @@ module Part1Parser = struct
     Scoped.hierarchical ~scope ~name:"part1_parser" create
 end
 
+module ProdWritePipeline = struct
+  type 'a t = {
+    write_enable : 'a;
+    write_address : 'a; [@bits address_bits_for max_blocks]
+    write_data : 'a; [@bits accumulator_bits]
+  }
+  [@@deriving hardcaml]
+end
+
 let create (scope : Scope.t) ({ clock; clear; _ } as input : _ I.t) : _ O.t =
   ignore scope;
   let spec = Reg_spec.create ~clock ~clear () in
@@ -116,8 +125,18 @@ let create (scope : Scope.t) ({ clock; clear; _ } as input : _ I.t) : _ O.t =
   let%hw_var col_idx = Variable.reg spec ~width:(address_bits_for max_blocks) in
   let%hw_var should_read_ram = Variable.reg spec ~width:1 in
   let%hw_var curr_sum = Variable.reg spec ~width:accumulator_bits in
-  let%hw_var curr_prod = Variable.reg (Reg_spec.override spec ~clear_to:(one accumulator_bits)) ~width:accumulator_bits in
+  let%hw_var curr_prod =
+    Variable.reg
+      (Reg_spec.override spec ~clear_to:(one accumulator_bits))
+      ~width:accumulator_bits
+  in
   let%hw_var part1 = Variable.reg spec ~width:output_bits in
+  (* Prod write pipeline *)
+  let write_pipeline_in = ProdWritePipeline.Of_always.wire zero in
+  let write_pipeline_out =
+    ProdWritePipeline.map ~f:(pipeline spec ~n:2)
+      (ProdWritePipeline.Of_always.value write_pipeline_in)
+  in
 
   let set_col_idx new_col_idx =
     proc
@@ -143,9 +162,9 @@ let create (scope : Scope.t) ({ clock; clear; _ } as input : _ I.t) : _ O.t =
   let update_prod =
     proc
       [
-        ram_prod.write_enable <-- vdd;
-        ram_prod.write_address <-- col_idx.value;
-        ram_prod.write_data
+        write_pipeline_in.write_enable <-- vdd;
+        write_pipeline_in.write_address <-- col_idx.value;
+        write_pipeline_in.write_data
         <-- uresize
               (uresize curr_prod.value (accumulator_bits - element_bits)
               *: commands.element)
@@ -155,6 +174,12 @@ let create (scope : Scope.t) ({ clock; clear; _ } as input : _ I.t) : _ O.t =
 
   compile
     [
+      proc
+        [
+          ram_prod.write_enable <-- write_pipeline_out.write_enable;
+          ram_prod.write_address <-- write_pipeline_out.write_address;
+          ram_prod.write_data <-- write_pipeline_out.write_data;
+        ];
       when_ should_read_ram.value
         [
           should_read_ram <-- gnd;
