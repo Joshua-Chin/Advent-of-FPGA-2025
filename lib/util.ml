@@ -32,3 +32,44 @@ let compute_multiply_shift divisor upper_bounds =
   Sequence.range start stop |> Sequence.find_map ~f:test |> Option.value_exn
 
 let bit_length x = Int.floor_log2 x + 1
+
+module type SimpleDualPortRamConfig = sig
+  val size : int
+  val item_width : int
+end
+
+module SimpleDualPortRam (C : SimpleDualPortRamConfig) = struct
+  let address_bits = address_bits_for C.size
+
+  module I = struct
+    type 'a t = {
+      write_address : 'a; [@bits address_bits]
+      write_enable : 'a;
+      write_data : 'a; [@bits C.item_width]
+      read_address : 'a; [@bits address_bits]
+      read_enable : 'a;
+    }
+    [@@deriving hardcaml]
+  end
+
+  let create (scope: Scope.t) ~clock
+      ({ write_address; write_enable; write_data; read_address; read_enable } :
+        _ I.t) =
+    ignore scope;
+    let write_port =
+      {
+        Write_port.write_clock = clock;
+        write_address;
+        write_enable;
+        write_data;
+      }
+    in
+    let read_port =
+      { Read_port.read_clock = clock; read_address; read_enable }
+    in
+    let q =
+      Ram.create ~collision_mode:Read_before_write ~size:C.size
+        ~write_ports:[| write_port |] ~read_ports:[| read_port |] ()
+    in
+    q.(0)
+end
