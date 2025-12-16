@@ -32,19 +32,19 @@ Day 7
 =====
 We maintain a kernel of the above 3 values (left center right), keeping the previous line in a line buffer.
 
+Day 12
+======
+This difficulty of this question is about parsing. While the logic is straightforward, properly modularizing makes it much cleaner.
+
 ------------------------
 
 TODO:
 ====
 Easy:
-12: Mostly about parsing.
 9: Doable - brute force, check against every line segment in parallel.
 6: Doable - slightly annoying parsing question. row by row.
+8: Graph Connectivity problem - Sorting / Primms. Doable, but seems painful.
 
 Unsure:
-10a: Search space may be small enough
-
-Hard:
 11: Graph DAG problem - pointer chasing and caching. Doable, but what's the point?
-8: Graph Connectivity problem - Union Find. Doable, but seems painful.
-10b: ILP
+10: Solvable by intelligent memoization by halving, but not any faster than a software ILP solver.
