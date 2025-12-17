@@ -81,10 +81,17 @@ end
 module States = struct
   type t =
     | Loading
+    | Prepare_execute
     | Update_distances
     | Compute_min_distance
     | Add_new_point
     | Compute_output
+    | Finish
+  [@@deriving sexp_of, compare ~localize, enumerate]
+end
+
+module Compute_output_states = struct
+  type t = Retrieve_x0 | Retrieve_x1 | Combine_xs
   [@@deriving sexp_of, compare ~localize, enumerate]
 end
 
@@ -104,6 +111,7 @@ let create (scope : Scope.t) ({ clock; clear; finish; _ } as input : _ I.t) :
   let input = Parser.hierarchical scope input in
   let open Always in
   let sm = State_machine.create (module States) spec in
+  let output_sm = State_machine.create (module Compute_output_states) spec in
   (* Store the vectors in shift buffers for parallel comparison *)
   let vectors_reg =
     Array.init max_vectors ~f:(fun _ ->
@@ -146,6 +154,8 @@ let create (scope : Scope.t) ({ clock; clear; finish; _ } as input : _ I.t) :
   let max_mst_edge = Edge.Of_always.reg spec in
 
   (* Stage: compute output *)
+  let%hw_var x0 = Variable.reg spec ~width:elem_bits in
+  let%hw_var part2 = Variable.reg spec ~width:output_bits in
   let%hw_var valid = Variable.reg spec ~width:1 in
 
   let prepare_load_vector idx =
@@ -188,22 +198,14 @@ let create (scope : Scope.t) ({ clock; clear; finish; _ } as input : _ I.t) :
                   vectors_idx <-- vectors_idx.value +:. 1;
                   last_idx <-- vectors_idx.value;
                 ];
-              when_ finish
-                [
-                  sm.set_next Update_distances;
-                  (let current_len =
-                     mux2 input.valid (vectors_idx.value +:. 1)
-                       vectors_idx.value
-                   in
-                   proc
-                     [
-                       connected_components <-- current_len;
-                       vectors_idx <--. 0;
-                       (* Manually specify the read address to avoid stale indices*)
-                       vectors_ram.read_enable <-- vdd;
-                       vectors_ram.read_address <-- current_len -:. 1;
-                     ]);
-                ];
+              when_ finish [ sm.set_next Prepare_execute ];
+            ] );
+          (* Add a stage to allow the RAM / register writes to settle. This probably can be optimized away. *)
+          ( Prepare_execute,
+            [
+              sm.set_next Update_distances;
+              connected_components <-- vectors_idx.value;
+              prepare_load_vector (zero addr_bits);
             ] );
           (* Update the minimum distances *)
           ( Update_distances,
@@ -253,22 +255,51 @@ let create (scope : Scope.t) ({ clock; clear; finish; _ } as input : _ I.t) :
               (* Prepare for the next loop *)
               (let new_components = connected_components.value -:. 1 in
                if_ (new_components ==:. 1)
-                 [
-                   sm.set_next Compute_output;
-                   prepare_load_vector max_mst_edge.before.value;
-                 ]
+                 [ sm.set_next Compute_output ]
                  [
                    sm.set_next Update_distances;
                    connected_components <-- new_components;
                    prepare_load_vector new_point.idx.value;
                  ]);
             ] );
-          (Compute_output, [ valid <-- vdd ]);
+          ( Compute_output,
+            [
+              output_sm.switch
+                [
+                  ( Retrieve_x0,
+                    [
+                      output_sm.set_next Retrieve_x1;
+                      prepare_load_vector max_mst_edge.before.value;
+                    ] );
+                  ( Retrieve_x1,
+                    [
+                      output_sm.set_next Combine_xs;
+                      x0
+                      <-- List.hd_exn
+                            (split_msb ~part_width:elem_bits vectors_ram_out);
+                      prepare_load_vector max_mst_edge.idx.value;
+                    ] );
+                  ( Combine_xs,
+                    [
+                      sm.set_next Compute_output;
+                      (let x1 =
+                         List.hd_exn
+                           (split_msb ~part_width:elem_bits vectors_ram_out)
+                       in
+                       proc
+                         [
+                           part2 <-- uresize (x0.value *: x1) output_bits;
+                           valid <-- vdd;
+                         ]);
+                    ] );
+                ];
+            ] );
+          (Finish, []);
         ];
     ];
   {
-    part1 = uresize new_point.idx.value output_bits;
-    part2 = uresize new_point.before.value output_bits;
+    part1 = zero output_bits;
+    part2 = part2.value;
     valid = valid.value;
   }
 
