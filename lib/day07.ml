@@ -32,6 +32,7 @@ let create (scope : Scope.t) ({ clock; clear; data_in; data_in_valid } : _ I.t)
   end) in
   let ram = SDPR.I.Of_always.wire zero in
   let ram_out = SDPR.create scope ~clock (SDPR.I.Of_always.value ram) in
+  let%hw_var should_read_ram = Variable.reg spec ~width:1 in
 
   (* Declare registers *)
   let%hw_var part1 = Variable.reg spec ~width:output_bits in
@@ -43,8 +44,13 @@ let create (scope : Scope.t) ({ clock; clear; data_in; data_in_valid } : _ I.t)
   let%hw_var left_splitter = Variable.reg spec ~width:1 in
   let%hw_var center = Variable.reg spec ~width:output_bits in
   let%hw_var center_splitter = Variable.reg spec ~width:1 in
-  let right = lsbs ram_out in
-  let right_splitter = msb ram_out in
+  let%hw_var right_cache = Variable.reg spec ~width:output_bits in
+  let%hw_var right_splitter_cache = Variable.reg spec ~width:1 in
+
+  let right = mux2 should_read_ram.value (lsbs ram_out) right_cache.value in
+  let right_splitter =
+    mux2 should_read_ram.value (msb ram_out) right_splitter_cache.value
+  in
   let kernel_sum =
     let z = zero output_bits in
     mux2 left_splitter.value left.value z
@@ -58,10 +64,14 @@ let create (scope : Scope.t) ({ clock; clear; data_in; data_in_valid } : _ I.t)
 
   compile
     [
-      ram.write_enable <-- gnd;
-      ram.read_enable <-- gnd;
       when_ data_in_valid
         [
+          when_ should_read_ram.value
+            [
+              should_read_ram <-- gnd;
+              right_cache <-- right;
+              right_splitter_cache <-- right_splitter;
+            ];
           if_
             (data_in ==:. Char.to_int '\n')
             [
@@ -71,6 +81,7 @@ let create (scope : Scope.t) ({ clock; clear; data_in; data_in_valid } : _ I.t)
               left_splitter <-- gnd;
               center <-- lsbs first_data.value;
               center_splitter <-- msb first_data.value;
+              should_read_ram <-- vdd;
               ram.read_enable <-- vdd;
               ram.read_address <--. 1;
               (* Reset part 2 *)
@@ -96,6 +107,7 @@ let create (scope : Scope.t) ({ clock; clear; data_in; data_in_valid } : _ I.t)
               left_splitter <-- center_splitter.value;
               center <-- right;
               center_splitter <-- right_splitter;
+              should_read_ram <-- vdd;
               ram.read_enable <-- vdd;
               ram.read_address <-- curr_col.value +:. 2;
               curr_col <-- curr_col.value +:. 1;
