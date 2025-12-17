@@ -120,6 +120,7 @@ let create (scope : Scope.t) ({ clock; clear; finish; _ } as input : _ I.t) :
   in
 
   let vectors_idx = Variable.reg spec ~width:addr_bits in
+  let last_idx = Variable.reg spec ~width:addr_bits in
 
   (* Track the number of connected components *)
   let%hw_var connected_components = Variable.reg spec ~width:addr_bits in
@@ -151,7 +152,7 @@ let create (scope : Scope.t) ({ clock; clear; finish; _ } as input : _ I.t) :
     proc
       [
         vectors_ram.read_enable <-- vdd;
-        vectors_ram.read_address <-- idx;
+        vectors_ram.read_address <-- last_idx.value -: idx;
         vectors_idx <-- idx;
       ]
   in
@@ -173,25 +174,35 @@ let create (scope : Scope.t) ({ clock; clear; finish; _ } as input : _ I.t) :
               when_ input.valid
                 [
                   (* Write the vector into the shift buffer register *)
-                  Array.to_list
-                    (Array.mapi vectors_reg ~f:(fun i r ->
-                         when_ (vectors_idx.value ==:. i)
-                           [
-                             List.map2_exn r input.elmenents ~f:( <-- ) |> proc;
-                           ]))
-                  |> proc;
+                  Array.mapi vectors_reg ~f:(fun i r ->
+                      if i = 0 then List.map2_exn r input.elmenents ~f:( <-- )
+                      else
+                        List.map2_exn r
+                          vectors_reg.(i - 1)
+                          ~f:(fun r l -> r <-- l.value))
+                  |> Array.map ~f:proc |> Array.to_list |> proc;
                   (* Write the vector into RAM *)
                   vectors_ram.write_enable <-- vdd;
                   vectors_ram.write_address <-- vectors_idx.value;
                   vectors_ram.write_data <-- reduce input.elmenents ~f:( @: );
                   vectors_idx <-- vectors_idx.value +:. 1;
+                  last_idx <-- vectors_idx.value;
                 ];
               when_ finish
                 [
                   sm.set_next Update_distances;
-                  connected_components <-- vectors_idx.value +:. 1;
-                  vectors_idx <--. 0;
-                  prepare_load_vector (zero (address_bits_for max_vectors));
+                  (let current_len =
+                     mux2 input.valid (vectors_idx.value +:. 1)
+                       vectors_idx.value
+                   in
+                   proc
+                     [
+                       connected_components <-- current_len;
+                       vectors_idx <--. 0;
+                       (* Manually specify the read address to avoid stale indices*)
+                       vectors_ram.read_enable <-- vdd;
+                       vectors_ram.read_address <-- current_len -:. 1;
+                     ]);
                 ];
             ] );
           (* Update the minimum distances *)
@@ -242,16 +253,17 @@ let create (scope : Scope.t) ({ clock; clear; finish; _ } as input : _ I.t) :
               (* Prepare for the next loop *)
               (let new_components = connected_components.value -:. 1 in
                if_ (new_components ==:. 1)
-                 [ sm.set_next Compute_output ]
+                 [
+                   sm.set_next Compute_output;
+                   prepare_load_vector max_mst_edge.before.value;
+                 ]
                  [
                    sm.set_next Update_distances;
                    connected_components <-- new_components;
                    prepare_load_vector new_point.idx.value;
                  ]);
             ] );
-          (Compute_output, [ 
-            valid <-- vdd;
-           ]);
+          (Compute_output, [ valid <-- vdd ]);
         ];
     ];
   {
