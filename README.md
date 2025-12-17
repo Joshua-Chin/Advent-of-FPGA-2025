@@ -28,6 +28,13 @@ Day 5
 =====
 We read the ranges into registers. To solve part 1, we compare each ingredient against all ranges simultaneously. To solve part 2, we sort the ranges as they come with insertion sort / a systolic array. Then, while simultaneously processing the ingredients, we process the sorted ranges with a ciricular shift buffer.
 
+Day 6
+=====
+
+Part 1: We maintain two line buffers - one for the current sum of each block and one for the product. In the final row, we mux between the two.
+Part 2: We maintain a line buffer contiaining the current value for each column. In the final row, we perform the operation.
+(One potential optimization is pipeline the multiplies in the final row, but I'm happy enough with the solution. We could either read into a buffer, then perform a multiply tree.)
+
 Day 7
 =====
 We maintain a kernel of the above 3 values (left center right), keeping the previous line in a line buffer.
@@ -42,7 +49,6 @@ TODO:
 ====
 Easy:
 9: Doable - brute force, check against every line segment in parallel.
-6: Doable - slightly annoying parsing question. row by row.
 8: Graph Connectivity problem - Sorting / Primms. Doable, but seems painful.
 
 Unsure:
