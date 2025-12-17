@@ -221,20 +221,95 @@ module Part1Solver = struct
     Scoped.hierarchical ~scope ~name:"part1solver" (create ~clock ~clear)
 end
 
-module ProdWritePipeline = struct
-  type 'a t = {
-    write_enable : 'a;
-    write_address : 'a; [@bits address_bits_for max_blocks]
-    write_data : 'a; [@bits accumulator_bits]
-  }
-  [@@deriving hardcaml]
-end
+let decimal_shift current new_digit =
+  uresize (current *: of_int 10 ~width:4) (width current)
+  +: uresize new_digit (width current)
 
-let create (scope : Scope.t) ({ clock; clear; _ } as input : _ I.t) : _ O.t =
-  ignore scope;
+let create (scope : Scope.t)
+    ({ clock; clear; data_in; data_in_valid } as input : _ I.t) : _ O.t =
   let commands = Part1Parser.hierarchical scope input in
   let part1 = Part1Solver.hierarchical ~clock ~clear scope commands in
-  { part1 = part1.solution; part2 = part1.solution }
+  (* Solve Part 2 *)
+  let spec = Reg_spec.create ~clock ~clear () in
+
+  let open Always in
+  (* Declare RAM *)
+  let module SDPR = Util.SimpleDualPortRam (struct
+    let size = max_cols
+    let item_width = element_bits
+  end) in
+  let ram_elements = SDPR.I.Of_always.wire zero in
+  let ram_elements_out =
+    SDPR.create scope ~clock (SDPR.I.Of_always.value ram_elements)
+  in
+  (* Declare Registers *)
+  let%hw_var col_idx = Variable.reg spec ~width:(address_bits_for max_cols) in
+  let%hw_var curr_element_cache = Variable.reg spec ~width:element_bits in
+  let%hw_var should_read_ram = Variable.reg spec ~width:1 in
+  let%hw_var is_op = Variable.reg spec ~width:1 in
+  let%hw_var is_mult = Variable.reg spec ~width:1 in
+  let%hw_var accum = Variable.reg spec ~width:accumulator_bits in
+  let%hw_var part2 = Variable.reg spec ~width:output_bits in
+
+  let new_col_idx =
+    mux2
+      (data_in ==:. Char.to_int '\n')
+      (zero (width col_idx.value))
+      (col_idx.value +:. 1)
+  in
+  let curr_element =
+    mux2 should_read_ram.value ram_elements_out curr_element_cache.value
+  in
+
+  compile
+    [
+      when_ should_read_ram.value
+        [ should_read_ram <-- gnd; curr_element_cache <-- curr_element ];
+      when_ data_in_valid
+        [
+          when_
+            (data_in >=:. Char.to_int '0' &: (data_in <=:. Char.to_int '9'))
+            [
+              ram_elements.write_enable <-- vdd;
+              ram_elements.write_address <-- col_idx.value;
+              ram_elements.write_data
+              <-- decimal_shift curr_element (data_in -:. Char.to_int '0');
+            ];
+          when_
+            (data_in ==:. Char.to_int '*')
+            [
+              is_op <-- vdd;
+              is_mult <-- vdd;
+              accum <-- uresize curr_element accumulator_bits;
+            ];
+          when_
+            (data_in ==:. Char.to_int '+')
+            [
+              is_op <-- vdd;
+              is_mult <-- gnd;
+              accum <-- uresize curr_element accumulator_bits;
+            ];
+          when_ is_op.value
+            [
+              when_ (curr_element ==:. 0)
+                [ part2 <-- part2.value +: accum.value; is_op <-- gnd ];
+              if_ is_mult.value
+                [
+                  accum
+                  <-- uresize (accum.value *: curr_element) accumulator_bits;
+                ]
+                [
+                  accum <-- accum.value +: uresize curr_element accumulator_bits;
+                ];
+            ];
+          should_read_ram <-- vdd;
+          ram_elements.read_enable <-- vdd;
+          ram_elements.read_address <-- new_col_idx;
+          col_idx <-- new_col_idx;
+        ];
+    ];
+
+  { part1 = part1.solution; part2 = part2.value }
 
 let hierarchical scope =
   let module Scoped = Hierarchy.In_scope (I) (O) in
