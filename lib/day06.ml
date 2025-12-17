@@ -96,6 +96,131 @@ module Part1Parser = struct
     Scoped.hierarchical ~scope ~name:"part1_parser" create
 end
 
+module Part1Solver = struct
+  module I = Part1Parser.O
+
+  module O = struct
+    type 'a t = { solution : 'a [@bits output_bits] } [@@deriving hardcaml]
+  end
+
+  module ProdWritePipeline = struct
+    type 'a t = {
+      write_enable : 'a;
+      write_address : 'a; [@bits address_bits_for max_blocks]
+      write_data : 'a; [@bits accumulator_bits]
+    }
+    [@@deriving hardcaml]
+  end
+
+  let create (scope : Scope.t) ~clock ~clear (commands : _ I.t) : _ O.t =
+    ignore scope;
+    let spec = Reg_spec.create ~clock ~clear () in
+    let open Always in
+    (* Declare RAM *)
+    let module SDPR = Util.SimpleDualPortRam (struct
+      let size = max_blocks
+      let item_width = accumulator_bits
+    end) in
+    let ram_sum = SDPR.I.Of_always.wire zero in
+    let ram_sum_out =
+      SDPR.create scope ~clock (SDPR.I.Of_always.value ram_sum)
+    in
+    let ram_prod = SDPR.I.Of_always.wire zero in
+    let ram_prod_out =
+      SDPR.create scope ~clock (SDPR.I.Of_always.value ram_prod)
+    in
+    (* Declare Register *)
+    let%hw_var col_idx =
+      Variable.reg spec ~width:(address_bits_for max_blocks)
+    in
+    let%hw_var should_read_ram = Variable.reg spec ~width:1 in
+    let%hw_var curr_sum = Variable.reg spec ~width:accumulator_bits in
+    let%hw_var curr_prod =
+      Variable.reg
+        (Reg_spec.override spec ~clear_to:(one accumulator_bits))
+        ~width:accumulator_bits
+    in
+    let%hw_var part1 = Variable.reg spec ~width:output_bits in
+    (* Prod write pipeline *)
+    let write_pipeline_in = ProdWritePipeline.Of_always.wire zero in
+    let write_pipeline_out =
+      ProdWritePipeline.map ~f:(pipeline spec ~n:2)
+        (ProdWritePipeline.Of_always.value write_pipeline_in)
+    in
+
+    let set_col_idx new_col_idx =
+      proc
+        [
+          col_idx <-- new_col_idx;
+          should_read_ram <-- vdd;
+          ram_prod.read_enable <-- vdd;
+          ram_prod.read_address <-- new_col_idx;
+          ram_sum.read_enable <-- vdd;
+          ram_sum.read_address <-- new_col_idx;
+        ]
+    in
+
+    let update_sum =
+      proc
+        [
+          ram_sum.write_enable <-- vdd;
+          ram_sum.write_address <-- col_idx.value;
+          ram_sum.write_data
+          <-- curr_sum.value +: uresize commands.element accumulator_bits;
+        ]
+    in
+    let update_prod =
+      proc
+        [
+          write_pipeline_in.write_enable <-- vdd;
+          write_pipeline_in.write_address <-- col_idx.value;
+          write_pipeline_in.write_data
+          <-- uresize
+                (uresize curr_prod.value (accumulator_bits - element_bits)
+                *: commands.element)
+                accumulator_bits;
+        ]
+    in
+
+    compile
+      [
+        when_ write_pipeline_out.write_enable
+          [
+            ram_prod.write_enable <-- write_pipeline_out.write_enable;
+            ram_prod.write_address <-- write_pipeline_out.write_address;
+            ram_prod.write_data <-- write_pipeline_out.write_data;
+          ];
+        when_ should_read_ram.value
+          [
+            should_read_ram <-- gnd;
+            curr_sum <-- ram_sum_out;
+            curr_prod
+            <-- mux2 (ram_prod_out ==:. 0)
+                  (one (width curr_prod.value))
+                  ram_prod_out;
+          ];
+        when_ commands.new_element
+          [ update_sum; update_prod; set_col_idx (col_idx.value +:. 1) ];
+        when_ commands.new_row [ set_col_idx (zero (width col_idx.value)) ];
+        when_ commands.new_op
+          [
+            part1
+            <-- part1.value
+                +: uresize
+                     (mux2 commands.is_multiply
+                        (mux2 should_read_ram.value ram_prod_out curr_prod.value)
+                        (mux2 should_read_ram.value ram_sum_out curr_sum.value))
+                     (width part1.value);
+            set_col_idx (col_idx.value +:. 1);
+          ];
+      ];
+    { solution = part1.value }
+
+  let hierarchical ~clock ~clear scope =
+    let module Scoped = Hierarchy.In_scope (I) (O) in
+    Scoped.hierarchical ~scope ~name:"part1solver" (create ~clock ~clear)
+end
+
 module ProdWritePipeline = struct
   type 'a t = {
     write_enable : 'a;
@@ -107,104 +232,9 @@ end
 
 let create (scope : Scope.t) ({ clock; clear; _ } as input : _ I.t) : _ O.t =
   ignore scope;
-  let spec = Reg_spec.create ~clock ~clear () in
-  let open Always in
   let commands = Part1Parser.hierarchical scope input in
-  (* Declare RAM *)
-  let module SDPR = Util.SimpleDualPortRam (struct
-    let size = max_blocks
-    let item_width = accumulator_bits
-  end) in
-  let ram_sum = SDPR.I.Of_always.wire zero in
-  let ram_sum_out = SDPR.create scope ~clock (SDPR.I.Of_always.value ram_sum) in
-  let ram_prod = SDPR.I.Of_always.wire zero in
-  let ram_prod_out =
-    SDPR.create scope ~clock (SDPR.I.Of_always.value ram_prod)
-  in
-  (* Declare Register *)
-  let%hw_var col_idx = Variable.reg spec ~width:(address_bits_for max_blocks) in
-  let%hw_var should_read_ram = Variable.reg spec ~width:1 in
-  let%hw_var curr_sum = Variable.reg spec ~width:accumulator_bits in
-  let%hw_var curr_prod =
-    Variable.reg
-      (Reg_spec.override spec ~clear_to:(one accumulator_bits))
-      ~width:accumulator_bits
-  in
-  let%hw_var part1 = Variable.reg spec ~width:output_bits in
-  (* Prod write pipeline *)
-  let write_pipeline_in = ProdWritePipeline.Of_always.wire zero in
-  let write_pipeline_out =
-    ProdWritePipeline.map ~f:(pipeline spec ~n:2)
-      (ProdWritePipeline.Of_always.value write_pipeline_in)
-  in
-
-  let set_col_idx new_col_idx =
-    proc
-      [
-        col_idx <-- new_col_idx;
-        should_read_ram <-- vdd;
-        ram_prod.read_enable <-- vdd;
-        ram_prod.read_address <-- new_col_idx;
-        ram_sum.read_enable <-- vdd;
-        ram_sum.read_address <-- new_col_idx;
-      ]
-  in
-
-  let update_sum =
-    proc
-      [
-        ram_sum.write_enable <-- vdd;
-        ram_sum.write_address <-- col_idx.value;
-        ram_sum.write_data
-        <-- curr_sum.value +: uresize commands.element accumulator_bits;
-      ]
-  in
-  let update_prod =
-    proc
-      [
-        write_pipeline_in.write_enable <-- vdd;
-        write_pipeline_in.write_address <-- col_idx.value;
-        write_pipeline_in.write_data
-        <-- uresize
-              (uresize curr_prod.value (accumulator_bits - element_bits)
-              *: commands.element)
-              accumulator_bits;
-      ]
-  in
-
-  compile
-    [
-      proc
-        [
-          ram_prod.write_enable <-- write_pipeline_out.write_enable;
-          ram_prod.write_address <-- write_pipeline_out.write_address;
-          ram_prod.write_data <-- write_pipeline_out.write_data;
-        ];
-      when_ should_read_ram.value
-        [
-          should_read_ram <-- gnd;
-          curr_sum <-- ram_sum_out;
-          curr_prod
-          <-- mux2 (ram_prod_out ==:. 0)
-                (one (width curr_prod.value))
-                ram_prod_out;
-        ];
-      when_ commands.new_element
-        [ update_sum; update_prod; set_col_idx (col_idx.value +:. 1) ];
-      when_ commands.new_row [ set_col_idx (zero (width col_idx.value)) ];
-      when_ commands.new_op
-        [
-          part1
-          <-- part1.value
-              +: uresize
-                   (mux2 commands.is_multiply
-                      (mux2 should_read_ram.value ram_prod_out curr_prod.value)
-                      (mux2 should_read_ram.value ram_sum_out curr_sum.value))
-                   (width part1.value);
-          set_col_idx (col_idx.value +:. 1);
-        ];
-    ];
-  { part1 = part1.value; part2 = zero output_bits }
+  let part1 = Part1Solver.hierarchical ~clock ~clear scope commands in
+  { part1 = part1.solution; part2 = part1.solution }
 
 let hierarchical scope =
   let module Scoped = Hierarchy.In_scope (I) (O) in
