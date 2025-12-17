@@ -210,10 +210,12 @@ let create (scope : Scope.t) ({ clock; clear; finish; _ } as input : _ I.t) :
           (* Update the minimum distances *)
           ( Update_distances,
             [
-              Array.map2_exn vectors_reg min_distances ~f:(fun v1 (i, d) ->
+              Array.mapi (Array.zip_exn vectors_reg min_distances)
+                ~f:(fun idx (v1, (i, d)) ->
                   let v0 = split_msb ~part_width:elem_bits vectors_ram_out in
                   let dist = distance v0 (List.map v1 ~f:(fun x -> x.value)) in
-                  when_ (dist <: d.value)
+                  when_
+                    (dist <: d.value &: (last_idx.value >=:. idx))
                     [ i <-- vectors_idx.value; d <-- dist ])
               |> Array.to_list |> proc;
               sm.set_next Compute_min_distance;
@@ -297,11 +299,7 @@ let create (scope : Scope.t) ({ clock; clear; finish; _ } as input : _ I.t) :
           (Finish, []);
         ];
     ];
-  {
-    part1 = zero output_bits;
-    part2 = part2.value;
-    valid = valid.value;
-  }
+  { part1 = zero output_bits; part2 = part2.value; valid = valid.value }
 
 let hierarchical scope =
   let module Scoped = Hierarchy.In_scope (I) (O) in

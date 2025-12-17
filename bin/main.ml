@@ -35,9 +35,7 @@ let () =
     inputs.data_in_valid := Bits.gnd
   in
 
-  let send_string string = String.iter string ~f:(fun c ->
-    send_char c;
-    ) in
+  let send_string string = String.iter string ~f:(fun c -> send_char c) in
 
   inputs.clear := Bits.vdd;
   Cyclesim.cycle sim;
@@ -48,14 +46,13 @@ let () =
 
   inputs.finish := Bits.vdd;
 
-  for _ = 0 to 100 do
-      Cyclesim.cycle sim;
+  while not (Bits.to_bool !(outputs.valid)) do
+    Cyclesim.cycle sim
   done;
-
 
   printf "Part 1: %d, Part 2: %d\n"
     (Bits.to_int !(outputs.part1))
     (Bits.to_int !(outputs.part2));
 
-
-  Waveform.print _waves ~display_height:80 ~display_width:250 ~signals_width:30 ~start_cycle:230
+  Waveform.print _waves ~display_height:80 ~display_width:250 ~signals_width:30
+    ~start_cycle:230
