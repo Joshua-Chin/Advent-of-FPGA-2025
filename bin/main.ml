@@ -46,7 +46,7 @@ let () =
 
   inputs.finish := Bits.vdd;
 
-  while not (Bits.to_bool !(outputs.valid)) do
+  while not (Bits.to_bool !(outputs.part2_valid)) do
     Cyclesim.cycle sim
   done;
 

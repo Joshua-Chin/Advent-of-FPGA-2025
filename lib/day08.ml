@@ -331,78 +331,13 @@ end
 let create (scope : Scope.t) ({ clock; clear; finish; _ } as input : _ I.t) :
     _ O.t =
   ignore scope;
-  let spec = Reg_spec.create ~clock ~clear () in
   let input = Parser.hierarchical scope input in
-
-  let open Always in
-  let sm = State_machine.create (module States) spec in
-  let sm_min_edge = State_machine.create (module MinEdgeStates) spec in
-  (* Track the vectors *)
-  let%hw_var total_vectors = Variable.reg spec ~width:addr_bits in
-  let vectors =
-    Array.init max_vectors ~f:(fun _ ->
-        List.init 3 ~f:(fun _ -> Variable.reg spec ~width:elem_bits))
-  in
-
-  (* Stage: Track the 1000 smallest edges *)
-  let min_edge_idx =
-    Variable.reg
-      (Reg_spec.override ~clear_to:(one addr_bits) spec)
-      ~width:addr_bits
-  in
-  let distances =
-    Array.init max_vectors ~f:(fun _ ->
-        (Variable.reg spec ~width:1, Variable.reg spec ~width:dist_bits))
-  in
-  let sorted_edges =
-    Array.init 1000 ~f:(fun _ ->
-        {
-          (Edge.Of_always.reg spec) with
-          (* The distance must default to the max value *)
-          Edge.dist =
-            Variable.reg
-              (Reg_spec.override spec ~clear_to:(ones dist_bits))
-              ~width:dist_bits;
-        })
-  in
-
-  let is_finish = Variable.reg spec ~width:1 in
-  compile
-    [
-      (* Input Handling *)
-      when_ finish [ is_finish <-- vdd ];
-      when_ input.valid
-        [
-          total_vectors <-- total_vectors.value +:. 1;
-          (* Add to the shift buffer *)
-          Array.mapi vectors ~f:(fun i r ->
-              if i = 0 then List.map2_exn r input.elmenents ~f:( <-- )
-              else List.map2_exn r vectors.(i - 1) ~f:(fun r v -> r <-- v.value))
-          |> Array.map ~f:proc |> Array.to_list |> proc;
-        ];
-      (* Core Logic *)
-      sm.switch
-        [
-          ( Finding_smallest_edges,
-            [
-              sm_min_edge.switch
-                [
-                  ( Compute_distances,
-                    [
-                      when_ (min_edge_idx)
-                      Array.mapi (Array.zip_exn distances vectors)
-                        ~f:(fun idx ((valid, dist), vec) -> when_)
-                      |> Array.to_list |> proc;
-                    ] );
-                ];
-            ] );
-        ];
-    ];
+  let part2 = Part2Solver.hierarchical scope {clock; clear; finish; input} in
   {
     part1 = zero output_bits;
     part1_valid = gnd;
-    part2 = zero output_bits;
-    part2_valid = gnd;
+    part2 = part2.solution;
+    part2_valid = part2.valid;
   }
 
 let hierarchical scope =
