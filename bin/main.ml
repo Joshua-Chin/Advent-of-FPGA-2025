@@ -54,5 +54,5 @@ let () =
     (Bits.to_int !(outputs.part1))
     (Bits.to_int !(outputs.part2));
 
-  Waveform.print _waves ~display_height:80 ~display_width:250 ~signals_width:30
-    ~start_cycle:230
+  Waveform.print _waves (*~display_height:80 ~display_width:250 ~signals_width:30
+    ~start_cycle:230*)
