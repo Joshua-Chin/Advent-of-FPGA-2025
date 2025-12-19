@@ -139,7 +139,7 @@ module GaussianElimination = struct
   end
 
   module States = struct
-    type t = Loading | Eliminate | Shift
+    type t = Loading | Eliminate
     [@@deriving sexp_of, compare ~localize, enumerate]
   end
 
@@ -242,23 +242,20 @@ module GaussianElimination = struct
                               |> Array.to_list)
                           in
                           Array.mapi matrix ~f:(fun idx row ->
-                              when_
+                              if_
                                 (pivot_idx.value <>:. idx &: msb row.value)
-                                [ row <-- row.value ^: pivot_row ])
+                                [ row <-- lsbs (row.value ^: pivot_row) @: gnd ]
+                                [ row <-- lsbs row.value @: gnd ])
                           |> Array.to_list |> proc);
+                         num_columns <-- num_columns.value -:. 1;
                        ]
                        [
                          output.free_variable <-- vdd;
                          output.free_variables <-- get_column;
+                         pop_column;
+                         num_columns <-- num_columns.value -:. 1;
                        ]);
-                    sm.set_next Shift;
                   ];
-              ] );
-            ( Shift,
-              [
-                pop_column;
-                num_columns <-- num_columns.value -:. 1;
-                sm.set_next Eliminate;
               ] );
           ];
       ];
