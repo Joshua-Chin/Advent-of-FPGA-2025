@@ -3,7 +3,7 @@ open! Stdio
 open! Hardcaml
 open Hardcaml_waveterm
 open! Advent_of_fpga_2025
-module M = Day08
+module M = Day10
 
 let create_sim () =
   let module Sim = Cyclesim.With_interface (M.I) (M.O) in
@@ -26,33 +26,27 @@ let () =
   let sim = create_sim () in
   let _waves, sim = Waveform.create sim in
   let inputs = Cyclesim.inputs sim in
-  let outputs = Cyclesim.outputs sim in
+  let outputs = Cyclesim.outputs ~clock_edge:Side.Before sim in
 
   let send_char char =
     inputs.data_in := Bits.of_char char;
     inputs.data_in_valid := Bits.vdd;
     Cyclesim.cycle sim;
-    inputs.data_in_valid := Bits.gnd
   in
-
-  let send_string string = String.iter string ~f:(fun c -> send_char c) in
 
   inputs.clear := Bits.vdd;
   Cyclesim.cycle sim;
   inputs.clear := Bits.gnd;
 
   let input = load_input () in
-  send_string input;
+  String.iter input ~f:(fun c ->
+      send_char c;
+      printf "%s\n" (Bits.to_string !(outputs.full_state)));
 
-  inputs.finish := Bits.vdd;
-
-  while not (Bits.to_bool !(outputs.part2_valid)) do
+  inputs.data_in_valid := Bits.gnd;
+  for _ = 0 to 10 do
     Cyclesim.cycle sim
   done;
 
-  printf "Part 1: %d, Part 2: %d\n"
-    (Bits.to_int !(outputs.part1))
-    (Bits.to_int !(outputs.part2));
+  Waveform.print _waves
 
-  Waveform.print _waves (*~display_height:80 ~display_width:250 ~signals_width:30
-    ~start_cycle:230*)
