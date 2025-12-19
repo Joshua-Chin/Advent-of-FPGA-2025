@@ -22,9 +22,7 @@ end
 
 module O = struct
   type 'a t = {
-    part1 : 'a; [@bits output_bits]
     part2 : 'a; [@bits output_bits]
-    part1_valid : 'a;
     part2_valid : 'a;
   }
   [@@deriving hardcaml]
@@ -324,8 +322,6 @@ let create (scope : Scope.t) ({ clock; clear; finish; _ } as input : _ I.t) :
   let input = Parser.hierarchical scope input in
   let part2 = Part2Solver.hierarchical scope {clock; clear; finish; input} in
   {
-    part1 = zero output_bits;
-    part1_valid = gnd;
     part2 = part2.solution;
     part2_valid = part2.valid;
   }
