@@ -20,6 +20,7 @@ end
 
 module O = struct
   type 'a t = {
+    part1: 'a; [@bits output_bits]
     min_solution : 'a; [@bits output_bits]
     max_solution : 'a; [@bits output_bits]
   }
@@ -275,7 +276,10 @@ module Solver = struct
           ];
       ];
 
-    { min_solution = min_solution.value; max_solution = max_solution.value }
+    { 
+      part1 = min_solution.value;
+      min_solution = min_solution.value; max_solution = max_solution.value
+    }
 
   let hierarchical scope =
     let module Scoped = Hierarchy.In_scope (I) (O) in
