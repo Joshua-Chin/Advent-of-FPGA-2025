@@ -318,16 +318,6 @@ module Part2Solver = struct
     Scoped.hierarchical ~scope ~name:"part2" create
 end
 
-module States = struct
-  type t = Finding_smallest_edges
-  [@@deriving sexp_of, compare ~localize, enumerate]
-end
-
-module MinEdgeStates = struct
-  type t = Compute_distances | Check_against_max | Insert_edges
-  [@@deriving sexp_of, compare ~localize, enumerate]
-end
-
 let create (scope : Scope.t) ({ clock; clear; finish; _ } as input : _ I.t) :
     _ O.t =
   ignore scope;
@@ -343,6 +333,3 @@ let create (scope : Scope.t) ({ clock; clear; finish; _ } as input : _ I.t) :
 let hierarchical scope =
   let module Scoped = Hierarchy.In_scope (I) (O) in
   Scoped.hierarchical ~scope ~name:"day08" create
-
-(*  let input = Parser.hierarchical scope input in
-  let part2 = Part2Solver.hierarchical scope {clock; clear; finish; input} in *)
