@@ -27,7 +27,7 @@ module Make (M : AdventOfFPGASolution) = struct
     in
     Sim.create (M.hierarchical scope)
 
-  let run ?(latency = 10) () =
+  let run ?(latency = 0) () =
     (* Load the input *)
     let input = load_input () in
 
