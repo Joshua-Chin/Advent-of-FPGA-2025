@@ -5,6 +5,7 @@ open! Signal
 let max_dim = 10
 let max_buttons = 13
 let output_bits = 16
+let max_free_variables = 4
 
 module I = struct
   type 'a t = {
@@ -133,7 +134,6 @@ module GaussianElimination = struct
       (* Fixed right hand side constants *)
       constant_rhs : 'a;
       constants_rhs : 'a; [@bits max_dim]
-      full_state : 'a; [@bits max_dim * (max_buttons + 1)]
     }
     [@@deriving hardcaml]
   end
@@ -190,9 +190,6 @@ module GaussianElimination = struct
 
     compile
       [
-        output.full_state
-        <-- (Array.map matrix ~f:(fun row -> row.value)
-            |> Array.to_list |> concat_lsb);
         sm.switch
           [
             ( Loading,
@@ -269,7 +266,7 @@ module GaussianElimination = struct
 
   let hierarchical scope =
     let module Scoped = Hierarchy.In_scope (I) (O) in
-    Scoped.hierarchical ~scope ~name:"gaussian_elim" create
+    Scoped.hierarchical ~scope ~name:"ge" create
 end
 
 module Solver = struct
@@ -286,6 +283,112 @@ module Solver = struct
     type 'a t = { valid : 'a; output : 'a [@bits output_bits] }
     [@@deriving hardcaml]
   end
+
+  module States = struct
+    type t = Loading | Compute_clicks | Reduce_clicks
+    [@@deriving sexp_of, compare ~localize, enumerate]
+  end
+
+  let create (scope : Scope.t) ({ clock; clear; commands } : _ I.t) : _ O.t =
+    ignore scope;
+    let spec = Reg_spec.create ~clock ~clear () in
+    let open Always in
+    let sm = State_machine.create (module States) spec in
+    let output = O.Of_always.wire zero in
+
+    let free_variables_coefs =
+      Array.init max_dim ~f:(fun _ ->
+          Variable.reg spec ~width:max_free_variables)
+    in
+    let constant_coefs = Variable.reg spec ~width:max_dim in
+
+    let clicks =
+      Array.init (Int.shift_left 1 max_free_variables) ~f:(fun _ ->
+          Variable.reg
+            (Reg_spec.override
+               ~clear_to:(ones (address_bits_for max_buttons))
+               spec)
+            ~width:(address_bits_for max_buttons))
+    in
+
+    let add_column values =
+      let values = split_lsb values ~part_width:1 |> List.to_array in
+      Array.map2_exn values free_variables_coefs ~f:(fun v r ->
+          r <-- lsbs r.value @: v)
+      |> Array.to_list |> proc
+    in
+
+    let clear =
+      proc
+        [
+          Array.map free_variables_coefs ~f:(fun row -> row <--. 0)
+          |> Array.to_list |> proc;
+          constant_coefs <--. 0;
+          Array.map clicks ~f:(fun row -> row <-- ones (width row.value))
+          |> Array.to_list |> proc;
+        ]
+    in
+
+    compile
+      [
+        sm.switch
+          [
+            ( Loading,
+              [
+                when_ commands.free_variable
+                  [ add_column commands.free_variables ];
+                when_ commands.constant_rhs
+                  [
+                    sm.set_next Compute_clicks;
+                    constant_coefs <-- commands.constants_rhs;
+                  ];
+              ] );
+            ( Compute_clicks,
+              [
+                Array.mapi clicks ~f:(fun i r ->
+                    let i_signal = of_int i ~width:max_free_variables in
+                    let constant_coefs =
+                      split_lsb constant_coefs.value ~part_width:1
+                      |> List.to_array
+                    in
+                    let free_variables =
+                      Array.map2_exn free_variables_coefs constant_coefs
+                        ~f:(fun v c ->
+                          let v = v.value &: i_signal in
+                          let elems = c :: split_lsb v ~part_width:1 in
+                          tree ~arity:2 ~f:(reduce ~f:( ^: )) elems)
+                      |> Array.to_list
+                    in
+                    let presses =
+                      popcount (i_signal @: concat_lsb free_variables)
+                    in
+                    r <-- presses)
+                |> Array.to_list |> proc;
+                sm.set_next Reduce_clicks;
+              ] );
+            ( Reduce_clicks,
+              [
+                (let min_clicks =
+                   Array.map clicks ~f:(fun r -> r.value)
+                   |> Array.to_list
+                   |> tree ~arity:2
+                        ~f:(reduce ~f:(fun a b -> mux2 (a <=: b) a b))
+                 in
+                 proc
+                   [
+                     sm.set_next Loading;
+                     clear;
+                     output.output <-- uresize min_clicks output_bits;
+                     output.valid <-- vdd;
+                   ]);
+              ] );
+          ];
+      ];
+    O.Of_always.value output
+
+  let hierarchical scope =
+    let module Scoped = Hierarchy.In_scope (I) (O) in
+    Scoped.hierarchical ~scope ~name:"solver" create
 end
 
 module O = GaussianElimination.O
