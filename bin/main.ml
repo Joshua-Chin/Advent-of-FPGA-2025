@@ -41,13 +41,14 @@ let () =
   let input = load_input () in
   String.iter input ~f:(fun c ->
       send_char c;
-      if Bits.to_bool !(outputs.free_variable) then
-      printf "%s\n" (Bits.to_string !(outputs.free_variables)));
+      );
 
   inputs.data_in_valid := Bits.gnd;
   for _ = 0 to 10 do
     Cyclesim.cycle sim
   done;
+
+  printf "output %d\n" (Bits.to_int !(outputs.part1));
 
   Waveform.print _waves
 

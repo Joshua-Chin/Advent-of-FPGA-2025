@@ -388,7 +388,9 @@ module Solver = struct
     Scoped.hierarchical ~scope ~name:"solver" create
 end
 
-module O = GaussianElimination.O
+module O = struct
+  type 'a t = { part1 : 'a [@bits output_bits] } [@@deriving hardcaml]
+end
 
 let create (scope : Scope.t) ({ clock; clear; _ } as input_signal : _ I.t) :
     _ O.t =
@@ -396,7 +398,15 @@ let create (scope : Scope.t) ({ clock; clear; _ } as input_signal : _ I.t) :
   let gaussian_elim =
     GaussianElimination.hierarchical scope { clock; clear; commands }
   in
-  gaussian_elim
+  let solver =
+    Solver.hierarchical scope { clock; clear; commands = gaussian_elim }
+  in
+  let open Always in
+  let spec = Reg_spec.create ~clock ~clear () in
+  let%hw_var part1 = Variable.reg spec ~width:output_bits in
+
+  compile [ when_ solver.valid [ part1 <-- part1.value +: solver.output ] ];
+  { part1 = part1.value }
 
 let hierarchical scope =
   let module Scoped = Hierarchy.In_scope (I) (O) in
