@@ -74,7 +74,7 @@ This circuit runs in `O(n)` cycles, instead of the typical `O(n^2)` cycles that 
 This approach represents a significant area vs latency tradeoff, using a very large number of DSP slices to minimize total runtime.
 If fewer DSP slices are available, we can instead process 
 
-To reduce routing congestionm, the points are stored both in registers and BRAM.
+To reduce routing congestion, the points are stored both in registers and BRAM.
 The instance in registers is used for the parallel distance calculation, while the instance in BRAM is used for retrieving the coordinates of the newly added point.
 
 ## Solution Descriptions
