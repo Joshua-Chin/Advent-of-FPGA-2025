@@ -296,7 +296,10 @@ let create (scope : Scope.t)
               if_ is_mult.value
                 [
                   accum
-                  <-- uresize (accum.value *: curr_element) accumulator_bits;
+                  <-- uresize
+                        (uresize accum.value (accumulator_bits - element_bits)
+                        *: curr_element)
+                        accumulator_bits;
                 ]
                 [
                   accum <-- accum.value +: uresize curr_element accumulator_bits;

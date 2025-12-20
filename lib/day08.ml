@@ -233,6 +233,7 @@ module Part2Solver = struct
             (* Compute the minimum distance over all points *)
             ( Compute_min_distance,
               [
+                (* TODO: consider pipelining and implicit indexing *)
                 (let min_dist_results =
                    Array.mapi min_distances ~f:(fun i (j, d) ->
                        {

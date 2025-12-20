@@ -64,9 +64,8 @@ For Part 2, the output is a batch process that finishes before the input is done
 Day 6
 =====
 
-Part 1: We maintain two line buffers - one for the current sum of each block and one for the product. In the final row, we mux between the two.
-Part 2: We maintain a line buffer containing the current value for each column. In the final row, we perform the operation.
-(One potential optimization is pipeline the multiplies in the final row, but I'm happy enough with the solution. We could either read into a buffer, then perform a multiply tree.)
+In Part 1, I maintain two line buffers over the blocks - one for the current sum and one for the product.
+In Part 2, I maintain a line buffer over each column, then perform the operations while reading the last row.
 
 Day 7
 =====
@@ -78,12 +77,16 @@ Day 8, Part 2
 =====
 While the problem description implies an edge-centric approach (Kruskal's algorithm), sorting O(N^2) edges is inefficient in hardware.
 Finding the last edge connected in Kruskal's algorithm is equivalent to finding the longest edge in the minimum spanning tree.
-Therefore, to improve the parallelism, I used Primm's algorithm.
+Therefore, to improve the parallelism, I used Primm's algorithm, while tracking the largest edge added so far.
 
 We fully parallelize the distance computations, determining a new edge in the MST in a fixed number of clock cycles.
 This circuit runs in `O(n)` cycles, instead of the typical `O(n^2)` cycles that a Kruskal's algorithm approach might use.
+This approach represents a significant area vs latency tradeoff, using a very large number of DSP slices to minimize total runtime.
+If fewer DSP slices are available, we can instead process 
 
-This design represents a significant area vs latency tradeoff, using a large number of DSP slices to minimize total runtime.
+To reduce routing congestionm, the points are stored both in registers and BRAM.
+The instance in registers is used for the parallel distance calculation, while the instance in BRAM is used for retrieving the coordinates of the newly added point.
+
 
 Day 10, Part 1
 ======
@@ -115,3 +118,4 @@ Day 12
 At first, this problem appears to be a grid packing problem that will require an ILP / constraint satisfaction approach.
 However, the test cases are trivial.
 Either there are too many individual cells required to fit in the grid, or the grid can fit a number of 3x3 bounding boxes greater than or equal to the number of tiles.
+The solution solves each test case in a constant number of cycles.
