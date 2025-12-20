@@ -28,7 +28,7 @@ module O = struct
 end
 
 module Config = struct
-  type 'a t = { initial_state : 'a Option.t }
+  type 'a t = { initial_state : 'a }
 end
 
 module States = struct
@@ -40,7 +40,7 @@ let rec pairwise = function
   | x :: (y :: _ as rest) -> (x, y) :: pairwise rest
   | _ -> []
 
-let create ~config:({ initial_state } : _ Config.t)
+let create ?(config : _ Config.t option)
     (scope : Scope.t) ({ clock; clear; finish; data_in; data_in_valid } : _ I.t)
     : _ O.t =
   ignore scope;
@@ -48,9 +48,9 @@ let create ~config:({ initial_state } : _ Config.t)
   let open Always in
   let sm = State_machine.create (module States) spec in
   let grid =
-    match initial_state with
+    match config with
     | Some state ->
-        let state_array = to_array state in
+        let state_array = to_array state.initial_state in
         Array.init rows ~f:(fun row ->
             Array.init cols ~f:(fun col ->
                 let idx = (row * cols) + col in
@@ -196,6 +196,6 @@ let create ~config:({ initial_state } : _ Config.t)
     part2_valid = part2_valid.value;
   }
 
-let hierarchical ~config scope =
+let hierarchical ?config scope =
   let module Scoped = Hierarchy.In_scope (I) (O) in
-  Scoped.hierarchical ~scope ~name:"day04" (create ~config)
+  Scoped.hierarchical ~scope ~name:"day04" (create ?config)
