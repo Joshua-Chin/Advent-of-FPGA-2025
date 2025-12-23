@@ -50,5 +50,5 @@ let () =
 
   printf "output %d\n" (Bits.to_int !(outputs.part1));
 
-  Waveform.print _waves ~display_width:150 ~start_cycle:20
+  Waveform.print _waves
 

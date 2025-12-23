@@ -1,6 +1,6 @@
 (executables
- (public_names advent-of-fpga-2025 - - - - - - - - - -)
- (names main day01 day02 day03 day04 day05 day06 day07 day08 day10 day12)
+ (public_names advent-of-fpga-2025 - - - - - - - - - - -)
+ (names main day01 day02 day03 day04 day05 day06 day07 day08 day09 day10 day12)
  (libraries advent_of_fpga_2025 base hardcaml hardcaml_waveterm)
  (preprocess
   (pps ppx_hardcaml ppx_jane)))

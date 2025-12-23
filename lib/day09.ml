@@ -81,10 +81,7 @@ module Parser = struct
 end
 
 module O = struct
-  type 'a t = {
-    part1 : 'a; [@bits output_bits]
-  }
-  [@@deriving hardcaml]
+  type 'a t = { part1 : 'a [@bits output_bits] } [@@deriving hardcaml]
 end
 
 let area x1 y1 x2 y2 =
@@ -109,11 +106,26 @@ let create (scope : Scope.t) ({ clock; clear; _ } as raw_input : _ I.t) : _ O.t
       (areas |> Array.map ~f:(fun x -> x.value) |> Array.to_list)
       ~arity:16
       ~f:(fun signals ->
-        tree signals ~arity:2 ~f:(reduce ~f:(fun a b -> mux2 (a >: b) a b)))
+        tree signals ~arity:2 ~f:(reduce ~f:(fun a b -> mux2 (a >: b) a b))
+        |> reg spec)
   in
   let part1 =
     reg_fb spec ~width:output_bits ~f:(fun signal ->
         mux2 (max_area >: signal) max_area signal)
+  in
+
+  (* Variables for convexity checking *)
+
+  (* We need to wait for at least 2 previous points *)
+  let%hw_var prev_points = Variable.reg spec ~width:2 in
+  let%hw_var prev_horizontal = Variable.reg spec ~width:1 in
+  let%hw_var prev_increasing = Variable.reg spec ~width:1 in
+  let%hw_var is_prev_convex = Variable.wire ~default:vdd in
+
+  let prev = Parser.O.Of_always.value points.(0) in
+  let is_horizontal = commands.x ==: prev.x in
+  let is_increasing =
+    mux2 is_horizontal (commands.y >: prev.y) (commands.x >: prev.y)
   in
 
   compile
@@ -125,14 +137,35 @@ let create (scope : Scope.t) ({ clock; clear; _ } as raw_input : _ I.t) : _ O.t
               when_ p.new_point.value
                 [ a <-- area commands.x commands.y p.x.value p.y.value ])
           |> Array.to_list |> proc;
+          (* Check convexity *)
+          if_ (prev_points.value ==:. 0)
+            [ prev_points <-- prev_points.value +:. 1 ]
+          @@ elif (prev_points.value ==:. 1)
+               [
+                 prev_points <-- prev_points.value +:. 1;
+                 prev_horizontal <-- is_horizontal;
+                 prev_increasing <-- is_increasing;
+               ]
+          @@ [
+               is_prev_convex
+               <-- (is_increasing ^: prev_increasing.value
+                   ^: prev_horizontal.value);
+               prev_horizontal <-- is_horizontal;
+               prev_increasing <-- is_increasing;
+             ];
           (* Insert point *)
-          Array.mapi points ~f:(fun i p ->
-              let prev =
-                if i = 0 then commands
-                else Parser.O.Of_always.value points.(i - 1)
-              in
-              Parser.O.Of_always.assign p prev)
-          |> Array.to_list |> proc;
+          (* If the previous point is not convex, override it *)
+          if_ is_prev_convex.value
+            [
+              Array.mapi points ~f:(fun i p ->
+                  let prev =
+                    if i = 0 then commands
+                    else Parser.O.Of_always.value points.(i - 1)
+                  in
+                  Parser.O.Of_always.assign p prev)
+              |> Array.to_list |> proc;
+            ]
+            [ Parser.O.Of_always.assign points.(0) commands ];
         ];
     ];
   { part1 }
