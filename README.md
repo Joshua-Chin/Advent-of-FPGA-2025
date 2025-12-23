@@ -113,6 +113,11 @@ The number of paths through a cell can be computed using only information of the
 I maintain a line buffer in BRAM storing the number of paths and whether the cell has a splitter for each column.
 I then run a sliding window as the input streams in.
 
+### Day 9, Part 1
+I read the points into a shift buffer, then compare new points in parallel against the previous points.
+Because the input is a simple orthogonal polygon with the points given in clockwise order, I eliminate roughly half the points from consideration by determining the interior angle.
+The maximum area rectangle must be formed by points on the convex hull, and for a simple orthogonal polygon, points on the convex hull must have an interior angle of 90 degrees.
+
 ### Day 12
 At first, this problem appears to be a grid packing problem that will require an ILP / constraint satisfaction approach.
 However, the test cases are trivial.
