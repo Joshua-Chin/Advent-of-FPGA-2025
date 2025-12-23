@@ -3,7 +3,7 @@ open! Stdio
 open! Hardcaml
 open Hardcaml_waveterm
 open! Advent_of_fpga_2025
-module M = Day10
+module M = Day09
 
 let create_sim () =
   let module Sim = Cyclesim.With_interface (M.I) (M.O) in
@@ -44,11 +44,11 @@ let () =
       );
 
   inputs.data_in_valid := Bits.gnd;
-  for _ = 0 to 10 do
+  for _ = 0 to 50 do
     Cyclesim.cycle sim
   done;
 
   printf "output %d\n" (Bits.to_int !(outputs.part1));
 
-  Waveform.print _waves
+  Waveform.print _waves ~display_width:150 ~start_cycle:20
 
