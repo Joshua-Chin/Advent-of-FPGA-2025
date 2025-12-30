@@ -8,7 +8,12 @@ Each solution parses the input file one character at a time.
 The solutions were validated against my official puzzle inputs using Cyclesim.
 Both parts of the problem are solved with the same circuit.
 
-To run a solution, you can use the following command.
+To run a solution, first install the dependencies:
+```
+opam install . --deps-only
+```
+
+Then run the following command:
 ```
 dune exec bin/dayXX.exe path/to/input/file.txt
 ```
@@ -29,7 +34,7 @@ dune exec bin/dayXX.exe path/to/input/file.txt
 ### Day 10, Part 1
 The problem asks for the minimal Hamming weight solution to a system of linear equations over GF(2).
 
-Because the inputs are roughly square (a similar number of buttons and dimensions), I apply Gaussian elimination, then brute force over the free variables.
+Because there are a similar number of buttons and dimensions (the augmented matrix is roughly square), I apply Gaussian elimination, then brute force over the free variables.
 
 When loading the problem, I store the augmented matrix in an array of shift buffers, with each buffer representing a row.
 
@@ -59,7 +64,7 @@ For part 1, which asks for only 2-repeats, I simply instantiated separate instan
 
 For part 2, we can instantiate separate instances for each digit count and divisor of that digit count.
 However, we need to avoid overcounting by performing inclusion-exclusion on the divisors.
-Conveniently, we can apply a Mobius transform to simplify the pre-computation of the coefficients.
+Conveniently, we can apply a Mobius transform on the inclusion exclusion calculation to simplify the pre-computation of the coefficients.
 My solution allows the user to set an arbitrary maximum digit count during generation, and will compute the coefficients on the fly.
 
 The output is a continuous stream, with a 7 cycle delay.
@@ -72,7 +77,7 @@ Therefore, to improve the parallelism, I used Primm's algorithm, while tracking 
 We fully parallelize the distance computations, determining a new edge in the MST in a fixed number of clock cycles.
 This circuit runs in `O(n)` cycles, instead of the typical `O(n^2)` cycles that a Kruskal's algorithm approach might use.
 This approach represents a significant area vs latency tradeoff, using a very large number of DSP slices to minimize total runtime.
-If fewer DSP slices are available, we can instead process 
+If fewer DSP slices are available, we can instead process the edges in batches, maximizing the DSP slice usage while fitting on a more reasonably sized board.
 
 To reduce routing congestion, the points are stored both in registers and BRAM.
 The instance in registers is used for the parallel distance calculation, while the instance in BRAM is used for retrieving the coordinates of the newly added point.
@@ -120,6 +125,6 @@ The maximum area rectangle must be formed by points on the convex hull, and for 
 
 ### Day 12
 At first, this problem appears to be a grid packing problem that will require an ILP / constraint satisfaction approach.
-However, the test cases are trivial.
+However, the test cases provided by Advent of Code are trivial.
 Either there are too many individual cells required to fit in the grid, or the grid can fit a number of 3x3 bounding boxes greater than or equal to the number of tiles.
 The solution solves each test case in a constant number of cycles.
