@@ -17,6 +17,14 @@
  (name advent-of-fpga-2025)
  (synopsis "Advent of Code 2025 with Hardcaml")
  (description "A project to solve Advent of Code 2025 using Hardcaml.")
- (depends ocaml))
+ (depends
+  (ocaml (>= 5.0.0))
+  dune
+  base
+  ppx_jane
+  hardcaml
+  ppx_hardcaml
+  hardcaml_waveterm
+  zerith))
 
 ; See the complete stanza docs at https://dune.readthedocs.io/en/stable/reference/dune-project/index.html

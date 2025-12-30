@@ -8,8 +8,14 @@ license: "MIT"
 homepage: "https://github.com/Joshua-Chin/advent-of-fpga-2025"
 bug-reports: "https://github.com/Joshua-Chin/advent-of-fpga-2025/issues"
 depends: [
+  "ocaml" {>= "5.0.0"}
   "dune" {>= "3.20"}
-  "ocaml"
+  "base"
+  "ppx_jane"
+  "hardcaml"
+  "ppx_hardcaml"
+  "hardcaml_waveterm"
+  "zerith"
   "odoc" {with-doc}
 ]
 build: [
