@@ -58,7 +58,7 @@ This problem asks us to compute the number of n-repeats in a list of ranges.
 
 I approached this by first implementing a circuit for a fixed number of digits and repeats.
 That circuit only requires a fixed number of divisions by a constant and multiplications.
-Because the range for each solver is bounded, I implemented my own function to precompute the multiply-shift values to take advantage of those bounds.
+Because the range for each solver is bounded by powers of 10, I implemented my own function to precompute the multiply-shift values to take advantage of those bounds.
 
 For part 1, which asks for only 2-repeats, I simply instantiated separate instances for each digit count up to the maximum, and computed the sum.
 
@@ -68,19 +68,6 @@ Conveniently, we can apply a Mobius transform on the inclusion exclusion calcula
 My solution allows the user to set an arbitrary maximum digit count during generation, and will compute the coefficients on the fly.
 
 The output is a continuous stream, with a 7 cycle delay.
-
-### Day 8, Part 2
-While the problem description implies an edge-centric approach (Kruskal's algorithm), sorting O(N^2) edges is inefficient in hardware.
-Finding the last edge connected in Kruskal's algorithm is equivalent to finding the longest edge in the minimum spanning tree.
-Therefore, to improve the parallelism, I used Primm's algorithm, while tracking the largest edge added so far.
-
-We fully parallelize the distance computations, determining a new edge in the MST in a fixed number of clock cycles.
-This circuit runs in `O(n)` cycles, instead of the typical `O(n^2)` cycles that a Kruskal's algorithm approach might use.
-This approach represents a significant area vs latency tradeoff, using a very large number of DSP slices to minimize total runtime.
-If fewer DSP slices are available, we can instead process the edges in batches, maximizing the DSP slice usage while fitting on a more reasonably sized board.
-
-To reduce routing congestion, the points are stored both in registers and BRAM.
-The instance in registers is used for the parallel distance calculation, while the instance in BRAM is used for retrieving the coordinates of the newly added point.
 
 ## Solution Descriptions
 
@@ -102,7 +89,7 @@ I support arbitrary dimensions by using the first row as a shift buffer, and shi
 I store each range in its own pair of registers, pushing into a shift buffer.
 For Part 1, I compare each ingredient against all pairs in parallel.
 
-For Part 2, I sort the ranges by their start as they come in, using insertion sort and a systolic array.
+For Part 2, I sort the ranges by their start as they come in, using parallelized insertion sort.
 Once all the ranges have been parsed, I iterate through the ranges, treating it as a circular shift buffer.
 That allows the solution to solve Part 1 and Part 2 simultaneously, while sharing the same set of registers for the ranges.
 
@@ -117,6 +104,19 @@ In Part 2, I maintain a line buffer over each column, then perform the operation
 The number of paths through a cell can be computed using only information of the above 3 cells (left, center, right).
 I maintain a line buffer in BRAM storing the number of paths and whether the cell has a splitter for each column.
 I then run a sliding window as the input streams in.
+
+### Day 8, Part 2
+While the problem description implies an edge-centric approach (Kruskal's algorithm), sorting O(N^2) edges is inefficient in hardware.
+Finding the last edge connected in Kruskal's algorithm is equivalent to finding the longest edge in the minimum spanning tree.
+Therefore, to improve the parallelism, I used Primm's algorithm, while tracking the largest edge added so far.
+
+We fully parallelize the distance computations, determining a new edge in the MST in a fixed number of clock cycles.
+This circuit runs in `O(n)` cycles, instead of the typical `O(n^2)` cycles that a Kruskal's algorithm approach might use.
+This approach represents a significant area vs latency tradeoff, using a very large number of DSP slices to minimize total runtime.
+If fewer DSP slices are available, we can instead process the edges in batches, maximizing the DSP slice usage while fitting on a more reasonably sized board.
+
+To reduce routing congestion, the points are stored both in registers and BRAM.
+The instance in registers is used for the parallel distance calculation, while the instance in BRAM is used for retrieving the coordinates of the newly added point.
 
 ### Day 9, Part 1
 I read the points into a shift buffer, then compare new points in parallel against the previous points.
