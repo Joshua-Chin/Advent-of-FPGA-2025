@@ -150,12 +150,18 @@ module GF8191 = struct
     add upper lower
 
   (* TODO: Ensure this compiles to ROM *)
-  let mul_inverse x =
-    mux x
-    @@ List.init (modulo - 1) ~f:(fun i ->
+  let precomputed_mul_inverse =
+    List.init (modulo - 1) ~f:(fun i ->
         Z.powm (Z.of_int i) (Z.of_int @@ (modulo - 2)) (Z.of_int modulo)
         |> Z.to_int |> of_int ~width:elem_bits)
+
+  let mul_inverse x = mux x precomputed_mul_inverse
+  let mul_pow2 x n = rotl x n
 end
+
+let list_assign registers list =
+  let open Always in
+  List.map2_exn registers list ~f:( <-- ) |> proc
 
 module GaussianElimination = struct
   module I = struct
@@ -165,9 +171,8 @@ module GaussianElimination = struct
 
   module NullSpace = struct
     type 'a t = {
-      f1 : 'a list; [@bits elem_bits] [@length max_dim]
-      f2 : 'a list; [@bits elem_bits] [@length max_dim]
-      f3 : 'a list; [@bits elem_bits] [@length max_dim]
+      free_variables : 'a list;
+          [@bits elem_bits] [@length max_free_variables * max_dim]
       constants : 'a list; [@bits elem_bits] [@length max_dim]
       upper_bounds : 'a list; [@bits target_bits] [@length max_free_variables]
     }
@@ -215,10 +220,6 @@ module GaussianElimination = struct
             reg_cell <-- mat_cell)
         |> proc)
     |> proc
-
-  let list_assign registers list =
-    let open Always in
-    List.map2_exn registers list ~f:( <-- ) |> proc
 
   module States = struct
     type t =
@@ -396,7 +397,8 @@ module GaussianElimination = struct
                 pop_column;
                 (* Push to the free variables *)
                 (let frees =
-                   [ accum.f1; accum.f2; accum.f3 ] |> List.transpose_exn
+                   List.chunks_of ~length:max_dim accum.free_variables
+                   |> List.transpose_exn
                  in
                  List.map2_exn curr_column frees ~f:Util.shift_push |> proc);
                 sm.set_next Select_pivot;
@@ -415,6 +417,178 @@ module GaussianElimination = struct
   let hierarchical scope =
     let module Scoped = Hierarchy.In_scope (I) (O) in
     Scoped.hierarchical ~scope ~name:"ge" create
+end
+
+module Solver = struct
+  module I = struct
+    type 'a t = {
+      clock : 'a;
+      clear : 'a;
+      commands : 'a GaussianElimination.O.t;
+    }
+    [@@deriving hardcaml]
+  end
+
+  module O = struct
+    type 'a t = {
+      solution_valid : 'a;
+      solution : 'a; [@bits target_bits]
+    }
+    [@@deriving hardcaml]
+  end
+
+  module NullSpace = GaussianElimination.NullSpace
+
+  let vecs_sub xs ys = List.map2_exn xs ys ~f:GF8191.sub
+
+  let get_next_idxs idxs bounds =
+    List.fold_right2_exn idxs bounds ~init:(vdd, [], [], [])
+      ~f:(fun i b (carry, incr_mask, carry_mask, new_idxs) ->
+        let saturated = i >=: b in
+        let reset = carry &: saturated in
+        let increment = carry &: ( ~: ) saturated in
+        let new_idx =
+          mux2 reset (zero (width i)) @@ mux2 increment (i +:. 1) @@ i
+        in
+        (reset, increment :: incr_mask, carry :: carry_mask, new_idx :: new_idxs))
+
+  let config_valid (config : _ list) =
+    List.map config ~f:(fun x -> x <:. 512)
+    |> tree ~arity:2 ~f:(reduce ~f:( &: ))
+
+  module States = struct
+    type t = Idle | Search [@@deriving sexp_of, compare ~localize, enumerate]
+  end
+
+  let create (scope : Scope.t) ({ clock; clear; commands } : _ I.t) : _ O.t =
+    ignore scope;
+    let spec = Reg_spec.create ~clock ~clear () in
+    let open Always in
+    let sm = State_machine.create (module States) spec in
+
+    (* Input FIFO *)
+    let read_enable = Variable.wire ~default:gnd in
+    let fifo =
+      Fifo.create ~showahead:true ~clock ~clear ~wr:commands.valid
+        ~d:(GaussianElimination.NullSpace.Of_signal.pack commands.null_space)
+        ~rd:read_enable.value ~capacity:max_test_cases ()
+    in
+    (* State variables *)
+    let free_variables =
+      List.init max_free_variables ~f:(fun _ ->
+          List.init max_dim ~f:(fun _ -> Variable.reg spec ~width:elem_bits))
+    in
+    let upper_bounds =
+      List.init max_free_variables ~f:(fun _ ->
+          Variable.reg spec ~width:target_bits)
+    in
+    let config =
+      List.init max_dim ~f:(fun _ -> Variable.reg spec ~width:elem_bits)
+    in
+    let config_cache =
+      List.init max_free_variables ~f:(fun _ ->
+          List.init max_dim ~f:(fun _ -> Variable.reg spec ~width:elem_bits))
+    in
+
+    let idxs =
+      List.init max_free_variables ~f:(fun _ ->
+          Variable.reg spec ~width:target_bits)
+    in
+
+    (* Output *)
+    let output_valid = Variable.reg spec ~width:1 in
+    let output =
+      Variable.reg
+        (Reg_spec.override spec ~clear_to:(ones target_bits))
+        ~width:target_bits
+    in
+    (* Logic Helper *)
+
+    let list_values = List.map ~f:Variable.value in
+    let list_reset rs = List.map ~f:(fun r -> r <--. 0) rs |> proc in
+
+    let is_done, incr_mask, carry_mask, next_idxs =
+      get_next_idxs (list_values idxs) (list_values upper_bounds)
+    in
+
+    let next_config =
+      List.map2_exn config_cache free_variables ~f:(fun c delta ->
+          vecs_sub (list_values c) (list_values delta))
+      |> List.transpose_exn
+      |> List.map ~f:(fun xs ->
+          priority_select
+          @@ List.map2_exn incr_mask xs ~f:(fun valid value ->
+              { With_valid.valid; value }))
+      |> List.map ~f:(fun x -> x.value)
+    in
+
+    let next_config_cache =
+      List.map2_exn carry_mask config_cache ~f:(fun r c ->
+          List.map2_exn next_config (list_values c) ~f:(mux2 r))
+    in
+
+    let curr_sum =
+      let idx_vals = list_values idxs in
+      let config_vals =
+        list_values config |> List.map ~f:(fun x -> uresize x target_bits)
+      in
+      idx_vals @ config_vals |> tree ~arity:2 ~f:(reduce ~f:( +: ))
+    in
+
+    let reset =
+      proc
+        [
+          list_reset @@ List.concat free_variables;
+          list_reset upper_bounds;
+          list_reset config;
+          list_reset idxs;
+          output <-- ones target_bits;
+          output_valid <-- gnd;
+        ]
+    in
+
+    compile
+      [
+        sm.switch
+          [
+            ( Idle,
+              [
+                reset;
+                when_ (( ~: ) fifo.empty)
+                  [
+                    read_enable <-- vdd;
+                    (let null_space = NullSpace.Of_signal.unpack fifo.q in
+                     proc
+                       [
+                         list_assign
+                           (List.concat free_variables)
+                           null_space.free_variables;
+                         list_assign config null_space.constants;
+                         List.map config_cache ~f:(fun row ->
+                             list_assign row null_space.constants)
+                         |> proc;
+                         list_assign upper_bounds null_space.upper_bounds;
+                       ]);
+                    sm.set_next Search;
+                  ];
+              ] );
+            ( Search,
+              [
+                when_
+                  (config_valid (list_values config))
+                  [ when_ (curr_sum <: output.value) [ output <-- curr_sum ] ];
+                when_ is_done [ output_valid <-- vdd; sm.set_next Idle ];
+                list_assign idxs next_idxs;
+                list_assign config next_config;
+                List.map2_exn config_cache next_config_cache ~f:(list_assign) |> proc;
+              ] );
+          ];
+      ];
+    { solution_valid = output_valid.value; solution = output.value }
+
+  let hierarchical scope =
+    let module Scoped = Hierarchy.In_scope (I) (O) in
+    Scoped.hierarchical ~scope ~name:"solver" create
 end
 
 module O = GaussianElimination.O
