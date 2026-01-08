@@ -169,7 +169,7 @@ module GaussianElimination = struct
       f2 : 'a list; [@bits elem_bits] [@length max_dim]
       f3 : 'a list; [@bits elem_bits] [@length max_dim]
       constants : 'a list; [@bits elem_bits] [@length max_dim]
-      upper_bounds : 'a list; [@bits elem_bits] [@length 3]
+      upper_bounds : 'a list; [@bits target_bits] [@length max_free_variables]
     }
     [@@deriving hardcaml]
   end
@@ -187,6 +187,14 @@ module GaussianElimination = struct
             mux2
               (test_case.num_buttons ==:. col)
               (uresize target elem_bits) (uresize cell elem_bits)))
+
+  let compute_upper_bounds (test_case : _ Parser.TestCase.t) =
+    let min a b = mux2 (a <: b) a b in
+    List.map test_case.buttons ~f:(fun button ->
+        let button = split_lsb button ~part_width:1 in
+        List.map2_exn button test_case.target ~f:(fun valid value ->
+            mux2 valid value (ones target_bits))
+        |> tree ~arity:2 ~f:(reduce ~f:min))
 
   let find_pivot rows ignore_mask =
     let head = List.map rows ~f:List.hd_exn in
@@ -241,6 +249,7 @@ module GaussianElimination = struct
       List.init max_dim ~f:(fun _ -> Variable.reg spec ~width:1)
     in
     let done_val = List.map ~f:Variable.value done_mask in
+
     let rows =
       List.init max_dim ~f:(fun _ ->
           List.init (max_buttons + 1) ~f:(fun _ ->
@@ -251,6 +260,10 @@ module GaussianElimination = struct
       List.map rows ~f:(fun row -> List.hd_exn row |> Variable.value)
     in
 
+    let upper_bounds =
+      List.init max_buttons ~f:(fun _ -> Variable.reg spec ~width:target_bits)
+    in
+
     (* Temporary pivot holder *)
     let pivot_idx_reg = Variable.reg spec ~width:(address_bits_for max_dim) in
     let pivot_row =
@@ -258,9 +271,11 @@ module GaussianElimination = struct
           Variable.reg spec ~width:elem_bits)
     in
 
+    (* Output *)
     let accum = NullSpace.Of_always.reg spec in
     let output_valid = Variable.reg spec ~width:1 in
 
+    (* Multiplicative inverse ROM *)
     let mul_inverse_address = Variable.reg spec ~width:elem_bits in
     let mul_inverse_data = GF8191.mul_inverse mul_inverse_address.value in
 
@@ -268,6 +283,7 @@ module GaussianElimination = struct
       proc
         [
           List.map rows ~f:(Fn.flip Util.shift_pop (zero elem_bits)) |> proc;
+          Util.shift_pop upper_bounds (zero target_bits);
           num_columns <-- num_columns.value -:. 1;
         ]
     in
@@ -297,6 +313,9 @@ module GaussianElimination = struct
                      proc
                        [
                          test_case_to_matrix test_case |> assign_to_matrix rows;
+                         compute_upper_bounds test_case
+                         |> List.map2_exn upper_bounds ~f:( <-- )
+                         |> proc;
                          num_columns <-- test_case.num_buttons;
                        ]);
                     sm.set_next Select_pivot;
@@ -379,6 +398,10 @@ module GaussianElimination = struct
                  in
                  List.map2_exn curr_column frees ~f:Util.shift_push |> proc);
                 sm.set_next Select_pivot;
+                (* Push the upper bounds *)
+                Util.shift_push
+                  (List.hd_exn upper_bounds |> Variable.value)
+                  accum.upper_bounds;
               ] );
           ];
       ];
