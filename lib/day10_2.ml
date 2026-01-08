@@ -2,8 +2,8 @@ open! Base
 open! Hardcaml
 open! Signal
 
-let max_dim = 10
-let max_buttons = 13
+let max_dim = 4
+let max_buttons = 6
 let output_bits = 16
 let max_free_variables = 3
 let max_target = 400
@@ -431,16 +431,14 @@ module Solver = struct
   end
 
   module O = struct
-    type 'a t = { solution_valid : 'a; solution : 'a [@bits elem_bits] }
+    type 'a t = { solution_valid : 'a; solution : 'a [@bits elem_bits]; config: 'a list [@bits elem_bits] [@length max_dim] }
     [@@deriving hardcaml]
   end
 
   module NS = GaussianElimination.NullSpace
 
   let vecs_sub xs ys = List.map2_exn xs ys ~f:GF8191.sub
-
-  let get_initial_config (null_space : _ NS.t) = 
-    null_space.constants
+  let get_initial_config (null_space : _ NS.t) = null_space.constants
 
   let get_next_idxs ~idxs ~bounds ~strides =
     List.fold_right2_exn idxs (List.zip_exn bounds strides)
@@ -472,7 +470,8 @@ module Solver = struct
     type t = Idle | Search [@@deriving sexp_of, compare ~localize, enumerate]
   end
 
-  let create (scope : Scope.t) ({ clock; clear; commands } : _ I.t) : _ O.t =
+  let create ?(stride_log2 = 1) (scope : Scope.t)
+      ({ clock; clear; commands } : _ I.t) : _ O.t =
     ignore scope;
     let spec = Reg_spec.create ~clock ~clear () in
     let open Always in
@@ -512,11 +511,12 @@ module Solver = struct
     let list_values = List.map ~f:Variable.value in
     let list_reset rs = List.map ~f:(fun r -> r <--. 0) rs |> proc in
 
-    let strides_log2 = List.init max_free_variables ~f:(fun _ -> 0) in
+    let strides_log2 = stride_log2 :: List.init (max_free_variables - 1) ~f:(fun _ -> 0) in
     let strides = List.map ~f:(fun x -> 2 ** x) strides_log2 in
 
     let is_done, incr_mask, carry_mask, next_idxs =
-      get_next_idxs ~idxs:(list_values idxs) ~bounds:(list_values upper_bounds) ~strides
+      get_next_idxs ~idxs:(list_values idxs) ~bounds:(list_values upper_bounds)
+        ~strides
     in
 
     let next_config =
@@ -589,7 +589,7 @@ module Solver = struct
               ] );
           ];
       ];
-    { solution_valid = output_valid.value; solution = output.value }
+    { solution_valid = output_valid.value; solution = output.value; config = list_values config }
 
   let hierarchical scope =
     let module Scoped = Hierarchy.In_scope (I) (O) in
