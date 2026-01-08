@@ -431,14 +431,28 @@ module Solver = struct
   end
 
   module O = struct
-    type 'a t = { solution_valid : 'a; solution : 'a [@bits elem_bits]; config: 'a list [@bits elem_bits] [@length max_dim] }
+    type 'a t = {
+      solution_valid : 'a;
+      solution : 'a; [@bits elem_bits]
+      config : 'a list; [@bits elem_bits] [@length max_dim]
+    }
     [@@deriving hardcaml]
   end
 
   module NS = GaussianElimination.NullSpace
 
   let vecs_sub xs ys = List.map2_exn xs ys ~f:GF8191.sub
-  let get_initial_config (null_space : _ NS.t) = null_space.constants
+
+  let get_initial_config (null_space : _ NS.t) offset =
+    if offset = 0 then null_space.constants
+    else
+      let free_variables =
+        List.chunks_of ~length:max_dim null_space.free_variables
+      in
+      vecs_sub null_space.constants
+        (List.map
+           (List.hd_exn free_variables)
+           ~f:(GF8191.mul (of_int offset ~width:elem_bits)))
 
   let get_next_idxs ~idxs ~bounds ~strides =
     List.fold_right2_exn idxs (List.zip_exn bounds strides)
@@ -470,7 +484,7 @@ module Solver = struct
     type t = Idle | Search [@@deriving sexp_of, compare ~localize, enumerate]
   end
 
-  let create ?(stride_log2 = 1) (scope : Scope.t)
+  let create ?(stride_log2 = 1) ?(offset = 2) (scope : Scope.t)
       ({ clock; clear; commands } : _ I.t) : _ O.t =
     ignore scope;
     let spec = Reg_spec.create ~clock ~clear () in
@@ -511,7 +525,9 @@ module Solver = struct
     let list_values = List.map ~f:Variable.value in
     let list_reset rs = List.map ~f:(fun r -> r <--. 0) rs |> proc in
 
-    let strides_log2 = stride_log2 :: List.init (max_free_variables - 1) ~f:(fun _ -> 0) in
+    let strides_log2 =
+      stride_log2 :: List.init (max_free_variables - 1) ~f:(fun _ -> 0)
+    in
     let strides = List.map ~f:(fun x -> 2 ** x) strides_log2 in
 
     let is_done, incr_mask, carry_mask, next_idxs =
@@ -561,7 +577,7 @@ module Solver = struct
                 when_ commands.null_space_valid
                   [
                     (let null_space = commands.null_space in
-                     let initial_config = get_initial_config null_space in
+                     let initial_config = get_initial_config null_space offset in
                      proc
                        [
                          list_assign
@@ -589,7 +605,11 @@ module Solver = struct
               ] );
           ];
       ];
-    { solution_valid = output_valid.value; solution = output.value; config = list_values config }
+    {
+      solution_valid = output_valid.value;
+      solution = output.value;
+      config = list_values config;
+    }
 
   let hierarchical scope =
     let module Scoped = Hierarchy.In_scope (I) (O) in
