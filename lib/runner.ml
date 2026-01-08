@@ -95,4 +95,6 @@ module Make (M : AdventOfFPGASolution) = struct
       Cyclesim.cycle sim;
       cycle_idx := !cycle_idx + 1
     done;
+
+    printf "Cycles: %d\n" (!cycle_idx - 1)
 end

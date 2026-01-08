@@ -16,6 +16,27 @@ let rec pairwise = function
   | x :: (y :: _ as rest) -> (x, y) :: pairwise rest
   | _ -> []
 
+let shift_push new_val shift_buffer =
+  let open Always in
+  let rec f new_val shift_buffer =
+    match shift_buffer with
+    | r :: rest -> (r <-- new_val) :: f r.value rest
+    | _ -> []
+  in
+  proc @@ f new_val shift_buffer
+
+let shift_pop shift_buffer default =
+  let open Always in
+  let rec f shift_buffer =
+    match shift_buffer with
+    | r :: rest ->
+        let new_val, actions = f rest in
+        (Variable.value r, (r <-- new_val) :: actions)
+    | _ -> (default, [])
+  in
+  let _, actions = f shift_buffer in
+  proc actions
+
 let compute_multiply_shift divisor upper_bounds =
   let open Z in
   let divisor = of_int divisor in
@@ -52,7 +73,7 @@ module SimpleDualPortRam (C : SimpleDualPortRamConfig) = struct
     [@@deriving hardcaml]
   end
 
-  let create (scope: Scope.t) ~clock
+  let create (scope : Scope.t) ~clock
       ({ write_address; write_enable; write_data; read_address; read_enable } :
         _ I.t) =
     ignore scope;
