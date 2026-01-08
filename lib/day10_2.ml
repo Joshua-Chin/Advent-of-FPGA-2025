@@ -181,15 +181,7 @@ module GaussianElimination = struct
   end
 
   module O = struct
-    type 'a t = {
-      valid : 'a;
-      null_space : 'a NullSpace.t;
-      is_elim_done : 'a;
-      mat : 'a list; [@bits elem_bits] [@length max_dim * (max_buttons + 1)]
-      mul_inv_req : 'a; [@bits elem_bits]
-      mul_inv : 'a; [@bits elem_bits]
-      pivot_row : 'a list; [@bits elem_bits] [@length max_buttons + 1]
-    }
+    type 'a t = { null_space_valid : 'a; null_space : 'a NullSpace.t }
     [@@deriving hardcaml]
   end
 
@@ -419,13 +411,8 @@ module GaussianElimination = struct
           ];
       ];
     {
-      O.valid = output_valid.value;
+      O.null_space_valid = output_valid.value;
       null_space = NullSpace.Of_always.value accum;
-      is_elim_done = sm.is Idle &: fifo.empty;
-      mat = List.concat rows |> List.map ~f:Variable.value;
-      pivot_row = List.map ~f:Variable.value pivot_row;
-      mul_inv = mul_inverse_data;
-      mul_inv_req = mul_inverse_address.value;
     }
 
   let hierarchical scope =
@@ -444,11 +431,7 @@ module Solver = struct
   end
 
   module O = struct
-    type 'a t = {
-      solution_valid : 'a;
-      solution : 'a; [@bits elem_bits]
-      is_solver_done : 'a;
-    }
+    type 'a t = { solution_valid : 'a; solution : 'a [@bits elem_bits] }
     [@@deriving hardcaml]
   end
 
@@ -481,13 +464,6 @@ module Solver = struct
     let open Always in
     let sm = State_machine.create (module States) spec in
 
-    (* Input FIFO *)
-    let read_enable = Variable.wire ~default:gnd in
-    let fifo =
-      Fifo.create ~showahead:true ~clock ~clear ~wr:commands.valid
-        ~d:(GaussianElimination.NullSpace.Of_signal.pack commands.null_space)
-        ~rd:read_enable.value ~capacity:max_test_cases ()
-    in
     (* State variables *)
     let free_variables =
       List.init max_free_variables ~f:(fun _ ->
@@ -569,10 +545,9 @@ module Solver = struct
             ( Idle,
               [
                 reset;
-                when_ (( ~: ) fifo.empty)
+                when_ commands.null_space_valid
                   [
-                    read_enable <-- vdd;
-                    (let null_space = NullSpace.Of_signal.unpack fifo.q in
+                    (let null_space = commands.null_space in
                      proc
                        [
                          list_assign
@@ -600,15 +575,64 @@ module Solver = struct
               ] );
           ];
       ];
-    {
-      solution_valid = output_valid.value;
-      solution = output.value;
-      is_solver_done = sm.is Idle &: fifo.empty;
-    }
+    { solution_valid = output_valid.value; solution = output.value }
 
   let hierarchical scope =
     let module Scoped = Hierarchy.In_scope (I) (O) in
     Scoped.hierarchical ~scope ~name:"solver" create
+end
+
+module SolverCoordinator = struct
+  module I = Solver.I
+  module O = Solver.O
+
+  module States = struct
+    type t = Idle | Busy [@@deriving sexp_of, compare ~localize, enumerate]
+  end
+
+  let create (scope : Scope.t) ({ clock; clear; commands } : _ I.t) :
+      _ O.t =
+    let open Always in
+    let spec = Reg_spec.create ~clock ~clear () in
+
+    let sm = State_machine.create (module States) spec in
+    (* Input FIFO *)
+    let read_enable = Variable.wire ~default:gnd in
+    let module NS = GaussianElimination.NullSpace in
+    let fifo =
+      Fifo.create ~showahead:true ~clock ~clear ~wr:commands.null_space_valid
+        ~d:(NS.Of_signal.pack commands.null_space)
+        ~rd:read_enable.value ~capacity:max_test_cases ()
+    in
+    let output =
+      Solver.hierarchical scope
+        {
+          clock;
+          clear;
+          commands =
+            {
+              null_space = NS.Of_signal.unpack fifo.q;
+              null_space_valid = read_enable.value;
+            };
+        }
+    in
+    compile
+      [
+        sm.switch
+          [
+            ( Idle,
+              [
+                when_ (( ~: ) fifo.empty)
+                  [ read_enable <-- vdd; sm.set_next Busy ];
+              ] );
+            (Busy, [ when_ output.solution_valid [ sm.set_next Idle ] ]);
+          ];
+      ];
+    output
+
+  let hierarchical scope =
+    let module Scoped = Hierarchy.In_scope (I) (O) in
+    Scoped.hierarchical ~scope ~name:"coordinator" create
 end
 
 module O = struct
@@ -635,7 +659,8 @@ let create (scope : Scope.t) ({ clock; clear; _ } as input : _ I.t) : _ O.t =
     GaussianElimination.hierarchical scope { clock; clear; commands = parser }
   in
   let solver =
-    Solver.hierarchical scope { clock; clear; commands = gaussian_elim }
+    SolverCoordinator.hierarchical scope
+      { clock; clear; commands = gaussian_elim }
   in
   let open Always in
   let spec = Reg_spec.create ~clock ~clear () in
