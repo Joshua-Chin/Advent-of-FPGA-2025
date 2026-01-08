@@ -10,7 +10,7 @@ let create_sim () =
   let scope =
     Scope.create ~auto_label_hierarchical_ports:true ~flatten_design:true ()
   in
-  Sim.create ~config:(Cyclesim.Config.trace `All_named) (M.hierarchical scope)
+  Sim.create ~config:(Cyclesim.Config.trace `All_named) (M.hierarchical ~offset:1 ~stride_log2:1 scope)
 
 let _load_input () =
   let argv = Sys.get_argv () in
@@ -101,7 +101,8 @@ print_string input;
     if true then
       print_s @@ M.O.sexp_of_t Bits.sexp_of_t @@ M.O.map ~f:( ! ) outputs;
     (* print_s @@ ((M.O.map ~f:(!) outputs).null_space |> List.chunks_of ~length:7 |> List.sexp_of_t (List.sexp_of_t Bits.sexp_of_t)); *)
-    Cyclesim.cycle sim
+    Cyclesim.cycle sim;
+    print_endline "";
   done;
 
   Waveform.print _waves

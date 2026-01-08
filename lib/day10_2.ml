@@ -2,8 +2,8 @@ open! Base
 open! Hardcaml
 open! Signal
 
-let max_dim = 4
-let max_buttons = 6
+let max_dim = 10
+let max_buttons = 13
 let output_bits = 16
 let max_free_variables = 3
 let max_target = 400
@@ -163,6 +163,14 @@ end
 let list_assign registers list =
   let open Always in
   List.map2_exn registers list ~f:( <-- ) |> proc
+
+let list_values =
+  let open Always in
+  List.map ~f:Variable.value
+
+let list_reset rs =
+  let open Always in
+  List.map ~f:(fun r -> r <--. 0) rs |> proc
 
 module GaussianElimination = struct
   module I = struct
@@ -431,11 +439,7 @@ module Solver = struct
   end
 
   module O = struct
-    type 'a t = {
-      solution_valid : 'a;
-      solution : 'a; [@bits elem_bits]
-      config : 'a list; [@bits elem_bits] [@length max_dim]
-    }
+    type 'a t = { solution_valid : 'a; solution : 'a [@bits elem_bits]; config: 'a list [@bits elem_bits] [@length max_dim] }
     [@@deriving hardcaml]
   end
 
@@ -484,7 +488,7 @@ module Solver = struct
     type t = Idle | Search [@@deriving sexp_of, compare ~localize, enumerate]
   end
 
-  let create ?(stride_log2 = 1) ?(offset = 2) (scope : Scope.t)
+  let create ?(stride_log2 = 0) ?(offset = 0) (scope : Scope.t)
       ({ clock; clear; commands } : _ I.t) : _ O.t =
     ignore scope;
     let spec = Reg_spec.create ~clock ~clear () in
@@ -521,9 +525,6 @@ module Solver = struct
         ~width:elem_bits
     in
     (* Logic Helper *)
-
-    let list_values = List.map ~f:Variable.value in
-    let list_reset rs = List.map ~f:(fun r -> r <--. 0) rs |> proc in
 
     let strides_log2 =
       stride_log2 :: List.init (max_free_variables - 1) ~f:(fun _ -> 0)
@@ -562,6 +563,7 @@ module Solver = struct
           list_reset upper_bounds;
           list_reset config;
           list_reset idxs;
+          List.hd_exn idxs <--. offset;
           output <-- ones elem_bits;
           output_valid <-- gnd;
         ]
@@ -577,7 +579,9 @@ module Solver = struct
                 when_ commands.null_space_valid
                   [
                     (let null_space = commands.null_space in
-                     let initial_config = get_initial_config null_space offset in
+                     let initial_config =
+                       get_initial_config null_space offset
+                     in
                      proc
                        [
                          list_assign
@@ -605,20 +609,22 @@ module Solver = struct
               ] );
           ];
       ];
-    {
-      solution_valid = output_valid.value;
-      solution = output.value;
-      config = list_values config;
-    }
+    { solution_valid = output_valid.value; solution = output.value; config = list_values config }
 
-  let hierarchical scope =
+  let hierarchical ?(stride_log2 = 0) ?(offset = 0) scope =
     let module Scoped = Hierarchy.In_scope (I) (O) in
-    Scoped.hierarchical ~scope ~name:"solver" create
+    Scoped.hierarchical ~scope ~name:"solver" (create ~stride_log2 ~offset)
 end
 
 module SolverCoordinator = struct
   module I = Solver.I
-  module O = Solver.O
+
+  module O = struct
+    type 'a t = { solution_valid : 'a; solution : 'a [@bits elem_bits] }
+    [@@deriving hardcaml]
+  end
+
+  let solvers_log2 = 5 (* Instantiate 32 solve cores *)
 
   module States = struct
     type t = Idle | Busy [@@deriving sexp_of, compare ~localize, enumerate]
@@ -637,31 +643,73 @@ module SolverCoordinator = struct
         ~d:(NS.Of_signal.pack commands.null_space)
         ~rd:read_enable.value ~capacity:max_test_cases ()
     in
-    let output =
-      Solver.hierarchical scope
-        {
-          clock;
-          clear;
-          commands =
+    (* Multiple solvers *)
+    let solver_outputs =
+      List.init (2 ** solvers_log2) ~f:(fun offset ->
+          Solver.hierarchical ~offset ~stride_log2:solvers_log2 scope
             {
-              null_space = NS.Of_signal.unpack fifo.q;
-              null_space_valid = read_enable.value;
-            };
-        }
+              clock;
+              clear;
+              commands =
+                {
+                  null_space = NS.Of_signal.unpack fifo.q;
+                  null_space_valid = read_enable.value;
+                };
+            })
     in
+    let min_solver_output =
+      List.map solver_outputs ~f:(fun o ->
+          mux2 o.solution_valid o.solution (ones elem_bits))
+      |> tree ~arity:2 ~f:(reduce ~f:(fun a b -> mux2 (a <: b) a b))
+    in
+    (* State registers *)
+    let solvers_done =
+      List.init (2 ** solvers_log2) ~f:(fun _ -> Variable.reg spec ~width:1)
+    in
+    let all_solvers_done =
+      tree (list_values solvers_done) ~arity:2 ~f:(reduce ~f:( &: ))
+    in
+
+    let output =
+      Variable.reg
+        (Reg_spec.override spec ~clear_to:(ones elem_bits))
+        ~width:elem_bits
+    in
+    let output_valid = Variable.reg spec ~width:1 in
+
+    let reset =
+      proc
+        [
+          list_reset solvers_done;
+          output <-- ones elem_bits;
+          output_valid <-- gnd;
+        ]
+    in
+
     compile
       [
         sm.switch
           [
             ( Idle,
               [
+                reset;
                 when_ (( ~: ) fifo.empty)
                   [ read_enable <-- vdd; sm.set_next Busy ];
               ] );
-            (Busy, [ when_ output.solution_valid [ sm.set_next Idle ] ]);
+            ( Busy,
+              [
+                when_ all_solvers_done
+                  [ output_valid <-- vdd; sm.set_next Idle ];
+                proc
+                @@ List.map2_exn solvers_done solver_outputs ~f:(fun r o ->
+                    when_ o.solution_valid [ r <-- vdd ]);
+                when_
+                  (min_solver_output <: output.value)
+                  [ output <-- min_solver_output ];
+              ] );
           ];
       ];
-    output
+    { solution = output.value; solution_valid = output_valid.value }
 
   let hierarchical scope =
     let module Scoped = Hierarchy.In_scope (I) (O) in
