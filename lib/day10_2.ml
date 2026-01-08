@@ -216,6 +216,10 @@ module GaussianElimination = struct
         |> proc)
     |> proc
 
+  let list_assign registers list =
+    let open Always in
+    List.map2_exn registers list ~f:( <-- ) |> proc
+
   module States = struct
     type t =
       | Idle
@@ -314,8 +318,7 @@ module GaussianElimination = struct
                        [
                          test_case_to_matrix test_case |> assign_to_matrix rows;
                          compute_upper_bounds test_case
-                         |> List.map2_exn upper_bounds ~f:( <-- )
-                         |> proc;
+                         |> list_assign upper_bounds;
                          num_columns <-- test_case.num_buttons;
                        ]);
                     sm.set_next Select_pivot;
@@ -327,7 +330,7 @@ module GaussianElimination = struct
                   [
                     output_valid <-- vdd;
                     (* Update the constants *)
-                    List.map2_exn accum.constants curr_column ~f:( <-- ) |> proc;
+                    list_assign accum.constants curr_column;
                     sm.set_next Idle;
                   ]
                   [
@@ -349,8 +352,7 @@ module GaussianElimination = struct
                           proc
                             [
                               (* Copy the row to the pivot row registers *)
-                              List.map2_exn pivot_row source_row ~f:( <-- )
-                              |> proc;
+                              list_assign pivot_row source_row;
                               (* Retrieve the multiplicative inverse from ROM *)
                               mul_inverse_address <-- List.hd_exn source_row;
                             ]);
