@@ -22,17 +22,17 @@ module I = struct
   [@@deriving hardcaml]
 end
 
-module TestCase = struct
-  type 'a t = {
-    num_buttons : 'a; [@bits address_bits_for max_buttons]
-    buttons : 'a list; [@bits max_dim] [@length max_buttons]
-    target : 'a list; [@bits target_bits] [@length max_dim]
-  }
-  [@@deriving hardcaml]
-end
-
 module Parser = struct
   module I = I
+
+  module TestCase = struct
+    type 'a t = {
+      num_buttons : 'a; [@bits address_bits_for max_buttons]
+      buttons : 'a list; [@bits max_dim] [@length max_buttons]
+      target : 'a list; [@bits target_bits] [@length max_dim]
+    }
+    [@@deriving hardcaml]
+  end
 
   module O = struct
     type 'a t = { test_case_valid : 'a; test_case : 'a TestCase.t }
@@ -132,31 +132,29 @@ module Parser = struct
     Scoped.hierarchical ~scope ~name:"parser" create
 end
 
-let add_mod x y =
-  let rs x = uresize x 14 in
-  let raw_sum = rs x +: rs y in
-  mux2 (raw_sum >=:. 8191) (lsbs raw_sum -:. 8191) (lsbs raw_sum)
+module GF8191 = struct
+  let add x y =
+    let rs x = uresize x 14 in
+    let raw_sum = rs x +: rs y in
+    mux2 (raw_sum >=:. 8191) (lsbs raw_sum -:. 8191) (lsbs raw_sum)
 
-let neg_mod x =
-  let is_zero = x ==:. 0 in
-  mux2 is_zero (zero elem_bits) (of_int modulo ~width:elem_bits -: x)
+  let neg x =
+    let is_zero = x ==:. 0 in
+    mux2 is_zero (zero elem_bits) (of_int modulo ~width:elem_bits -: x)
 
-let sub_mod x y = add_mod x (neg_mod y)
+  let sub x y = add x (neg y)
 
-let mul_mod x y =
-  let raw_mul = x *: y in
-  let upper, lower = split_in_half_msb raw_mul in
-  add_mod upper lower
+  let mul x y =
+    let raw_mul = x *: y in
+    let upper, lower = split_in_half_msb raw_mul in
+    add upper lower
 
-module NullSpace = struct
-  type 'a t = {
-    f1 : 'a list; [@bits elem_bits] [@length max_dim]
-    f2 : 'a list; [@bits elem_bits] [@length max_dim]
-    f3 : 'a list; [@bits elem_bits] [@length max_dim]
-    constants : 'a list; [@bits elem_bits] [@length max_dim]
-    upper_bounds : 'a list; [@bits elem_bits] [@length 3]
-  }
-  [@@deriving hardcaml]
+  (* TODO: Ensure this compiles to ROM *)
+  let mul_inverse x =
+    mux x
+    @@ List.init (modulo - 1) ~f:(fun i ->
+        Z.powm (Z.of_int i) (Z.of_int @@ (modulo - 2)) (Z.of_int modulo)
+        |> Z.to_int |> of_int ~width:elem_bits)
 end
 
 module GaussianElimination = struct
@@ -165,19 +163,23 @@ module GaussianElimination = struct
     [@@deriving hardcaml]
   end
 
+  module NullSpace = struct
+    type 'a t = {
+      f1 : 'a list; [@bits elem_bits] [@length max_dim]
+      f2 : 'a list; [@bits elem_bits] [@length max_dim]
+      f3 : 'a list; [@bits elem_bits] [@length max_dim]
+      constants : 'a list; [@bits elem_bits] [@length max_dim]
+      upper_bounds : 'a list; [@bits elem_bits] [@length 3]
+    }
+    [@@deriving hardcaml]
+  end
+
   module O = struct
     type 'a t = { valid : 'a; null_space : 'a NullSpace.t }
     [@@deriving hardcaml]
   end
 
-  (* Inputs must be registered *)
-  let mul_inverse x =
-    mux x
-    @@ List.init (modulo - 1) ~f:(fun i ->
-        Z.powm (Z.of_int i) (Z.of_int @@ (modulo - 2)) (Z.of_int modulo)
-        |> Z.to_int |> of_int ~width:elem_bits)
-
-  let test_case_to_matrix (test_case : _ TestCase.t) =
+  let test_case_to_matrix (test_case : _ Parser.TestCase.t) =
     let columns = test_case.buttons |> List.map ~f:(split_lsb ~part_width:1) in
     let rows = List.transpose_exn columns in
     List.map2_exn rows test_case.target ~f:(fun row target ->
@@ -227,7 +229,7 @@ module GaussianElimination = struct
     let%hw_var read_enable = Variable.wire ~default:gnd in
     let fifo =
       Fifo.create ~showahead:true ~clock ~clear ~wr:commands.test_case_valid
-        ~d:(TestCase.Of_signal.pack commands.test_case)
+        ~d:(Parser.TestCase.Of_signal.pack commands.test_case)
         ~rd:read_enable.value ~capacity:max_test_cases ()
     in
 
@@ -260,7 +262,7 @@ module GaussianElimination = struct
     let output_valid = Variable.reg spec ~width:1 in
 
     let mul_inverse_address = Variable.reg spec ~width:elem_bits in
-    let mul_inverse_data = mul_inverse mul_inverse_address.value in
+    let mul_inverse_data = GF8191.mul_inverse mul_inverse_address.value in
 
     let pop_column =
       proc
@@ -291,7 +293,7 @@ module GaussianElimination = struct
                   [
                     (* Read value from the FIFO *)
                     read_enable <-- vdd;
-                    (let test_case = TestCase.Of_signal.unpack fifo.q in
+                    (let test_case = Parser.TestCase.Of_signal.unpack fifo.q in
                      proc
                        [
                          test_case_to_matrix test_case |> assign_to_matrix rows;
@@ -340,13 +342,15 @@ module GaussianElimination = struct
               ] );
             ( Normalize_pivot,
               [
+                (* Normalize the pivot to start with 1 *)
                 List.map pivot_row ~f:(fun elem ->
-                    elem <-- mul_mod elem.value mul_inverse_data)
+                    elem <-- GF8191.mul elem.value mul_inverse_data)
                 |> proc;
                 sm.set_next Eliminate;
               ] );
             ( Eliminate,
               [
+                (* Eliminate the pivot column from the other rows *)
                 List.mapi rows ~f:(fun i row ->
                     let head = List.hd_exn row |> Variable.value in
                     if_
@@ -358,7 +362,7 @@ module GaussianElimination = struct
                       ]
                       [
                         List.map2_exn row pivot_row ~f:(fun r x ->
-                            r <-- sub_mod r.value (mul_mod x.value head))
+                            r <-- GF8191.sub r.value (GF8191.mul x.value head))
                         |> proc;
                       ])
                 |> proc;
