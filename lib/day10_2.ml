@@ -2,14 +2,13 @@ open! Base
 open! Hardcaml
 open! Signal
 
-let max_dim = 4
-let max_buttons = 6
+let max_dim = 10
+let max_buttons = 13
 let output_bits = 16
 let max_free_variables = 3
 let max_target = 400
 let target_bits = address_bits_for max_target
 let max_test_cases = 200
-let modulo = 8191
 let elem_bits = 13
 
 module I = struct
@@ -133,6 +132,8 @@ module Parser = struct
 end
 
 module GF8191 = struct
+  let modulo = 8191
+
   let add x y =
     let rs x = uresize x 14 in
     let raw_sum = rs x +: rs y in
@@ -151,7 +152,7 @@ module GF8191 = struct
 
   (* TODO: Ensure this compiles to ROM *)
   let precomputed_mul_inverse =
-    List.init (modulo - 1) ~f:(fun i ->
+    List.init modulo ~f:(fun i ->
         Z.powm (Z.of_int i) (Z.of_int @@ (modulo - 2)) (Z.of_int modulo)
         |> Z.to_int |> of_int ~width:elem_bits)
 
@@ -180,7 +181,15 @@ module GaussianElimination = struct
   end
 
   module O = struct
-    type 'a t = { valid : 'a; null_space : 'a NullSpace.t }
+    type 'a t = {
+      valid : 'a;
+      null_space : 'a NullSpace.t;
+      is_elim_done : 'a;
+      mat : 'a list; [@bits elem_bits] [@length max_dim * (max_buttons + 1)]
+      mul_inv_req : 'a; [@bits elem_bits]
+      mul_inv : 'a; [@bits elem_bits]
+      pivot_row : 'a list; [@bits elem_bits] [@length max_buttons + 1]
+    }
     [@@deriving hardcaml]
   end
 
@@ -412,6 +421,11 @@ module GaussianElimination = struct
     {
       O.valid = output_valid.value;
       null_space = NullSpace.Of_always.value accum;
+      is_elim_done = sm.is Idle &: fifo.empty;
+      mat = List.concat rows |> List.map ~f:Variable.value;
+      pivot_row = List.map ~f:Variable.value pivot_row;
+      mul_inv = mul_inverse_data;
+      mul_inv_req = mul_inverse_address.value;
     }
 
   let hierarchical scope =
@@ -432,7 +446,8 @@ module Solver = struct
   module O = struct
     type 'a t = {
       solution_valid : 'a;
-      solution : 'a; [@bits target_bits]
+      solution : 'a; [@bits elem_bits]
+      is_solver_done : 'a;
     }
     [@@deriving hardcaml]
   end
@@ -499,8 +514,8 @@ module Solver = struct
     let output_valid = Variable.reg spec ~width:1 in
     let output =
       Variable.reg
-        (Reg_spec.override spec ~clear_to:(ones target_bits))
-        ~width:target_bits
+        (Reg_spec.override spec ~clear_to:(ones elem_bits))
+        ~width:elem_bits
     in
     (* Logic Helper *)
 
@@ -528,10 +543,10 @@ module Solver = struct
     in
 
     let curr_sum =
-      let idx_vals = list_values idxs in
-      let config_vals =
-        list_values config |> List.map ~f:(fun x -> uresize x target_bits)
+      let idx_vals =
+        list_values idxs |> List.map ~f:(fun x -> uresize x elem_bits)
       in
+      let config_vals = list_values config in
       idx_vals @ config_vals |> tree ~arity:2 ~f:(reduce ~f:( +: ))
     in
 
@@ -542,7 +557,7 @@ module Solver = struct
           list_reset upper_bounds;
           list_reset config;
           list_reset idxs;
-          output <-- ones target_bits;
+          output <-- ones elem_bits;
           output_valid <-- gnd;
         ]
     in
@@ -580,25 +595,63 @@ module Solver = struct
                 when_ is_done [ output_valid <-- vdd; sm.set_next Idle ];
                 list_assign idxs next_idxs;
                 list_assign config next_config;
-                List.map2_exn config_cache next_config_cache ~f:(list_assign) |> proc;
+                List.map2_exn config_cache next_config_cache ~f:list_assign
+                |> proc;
               ] );
           ];
       ];
-    { solution_valid = output_valid.value; solution = output.value }
+    {
+      solution_valid = output_valid.value;
+      solution = output.value;
+      is_solver_done = sm.is Idle &: fifo.empty;
+    }
 
   let hierarchical scope =
     let module Scoped = Hierarchy.In_scope (I) (O) in
     Scoped.hierarchical ~scope ~name:"solver" create
 end
 
-module O = GaussianElimination.O
+module O = struct
+  type 'a t = { part2 : 'a; [@bits output_bits] part2_valid : 'a }
+  [@@deriving hardcaml]
+end
+
+module Test = struct
+  module I = GaussianElimination.I
+  module O = Solver.O
+
+  let create (scope : Scope.t) ({ clock; clear; _ } as input : _ I.t) : _ O.t =
+    Solver.hierarchical scope
+      { clock; clear; commands = GaussianElimination.hierarchical scope input }
+
+  let hierarchical scope =
+    let module Scoped = Hierarchy.In_scope (I) (O) in
+    Scoped.hierarchical ~scope ~name:"soltestver" create
+end
 
 let create (scope : Scope.t) ({ clock; clear; _ } as input : _ I.t) : _ O.t =
   let parser = Parser.hierarchical scope input in
   let gaussian_elim =
     GaussianElimination.hierarchical scope { clock; clear; commands = parser }
   in
-  gaussian_elim
+  let solver =
+    Solver.hierarchical scope { clock; clear; commands = gaussian_elim }
+  in
+  let open Always in
+  let spec = Reg_spec.create ~clock ~clear () in
+  let output = Variable.reg spec ~width:output_bits in
+  let progress_bits = address_bits_for max_test_cases in
+  let in_progress = Variable.reg spec ~width:progress_bits in
+  compile
+    [
+      when_ solver.solution_valid
+        [ output <-- output.value +: uresize solver.solution output_bits ];
+      in_progress
+      <-- in_progress.value
+          +: uresize parser.test_case_valid progress_bits
+          -: uresize solver.solution_valid progress_bits;
+    ];
+  { part2 = output.value; part2_valid = in_progress.value ==:. 0 }
 
 let hierarchical scope =
   let module Scoped = Hierarchy.In_scope (I) (O) in
