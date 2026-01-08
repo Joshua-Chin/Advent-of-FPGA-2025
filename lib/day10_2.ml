@@ -435,20 +435,34 @@ module Solver = struct
     [@@deriving hardcaml]
   end
 
-  module NullSpace = GaussianElimination.NullSpace
+  module NS = GaussianElimination.NullSpace
 
   let vecs_sub xs ys = List.map2_exn xs ys ~f:GF8191.sub
 
-  let get_next_idxs idxs bounds =
-    List.fold_right2_exn idxs bounds ~init:(vdd, [], [], [])
-      ~f:(fun i b (carry, incr_mask, carry_mask, new_idxs) ->
+  let get_initial_config (null_space : _ NS.t) = 
+    null_space.constants
+
+  let get_next_idxs ~idxs ~bounds ~strides =
+    List.fold_right2_exn idxs (List.zip_exn bounds strides)
+      ~init:(vdd, [], [], [])
+      ~f:(fun i (b, s) (carry, incr_mask, carry_mask, new_idxs) ->
         let saturated = i >=: b in
         let reset = carry &: saturated in
         let increment = carry &: ( ~: ) saturated in
         let new_idx =
-          mux2 reset (zero (width i)) @@ mux2 increment (i +:. 1) @@ i
+          mux2 reset (zero (width i)) @@ mux2 increment (i +:. s) @@ i
         in
         (reset, increment :: incr_mask, carry :: carry_mask, new_idx :: new_idxs))
+
+  let get_next_config ~cache ~coefs ~strides_log2 ~incr_mask =
+    List.map2_exn cache (List.zip_exn coefs strides_log2) ~f:(fun c (d, s) ->
+        vecs_sub c (List.map d ~f:(fun x -> GF8191.mul_pow2 x s)))
+    |> List.transpose_exn
+    |> List.map ~f:(fun xs ->
+        priority_select
+        @@ List.map2_exn incr_mask xs ~f:(fun valid value ->
+            { With_valid.valid; value }))
+    |> List.map ~f:(fun x -> x.value)
 
   let config_valid (config : _ list) =
     List.map config ~f:(fun x -> x <:. 512)
@@ -498,19 +512,18 @@ module Solver = struct
     let list_values = List.map ~f:Variable.value in
     let list_reset rs = List.map ~f:(fun r -> r <--. 0) rs |> proc in
 
+    let strides_log2 = List.init max_free_variables ~f:(fun _ -> 0) in
+    let strides = List.map ~f:(fun x -> 2 ** x) strides_log2 in
+
     let is_done, incr_mask, carry_mask, next_idxs =
-      get_next_idxs (list_values idxs) (list_values upper_bounds)
+      get_next_idxs ~idxs:(list_values idxs) ~bounds:(list_values upper_bounds) ~strides
     in
 
     let next_config =
-      List.map2_exn config_cache free_variables ~f:(fun c delta ->
-          vecs_sub (list_values c) (list_values delta))
-      |> List.transpose_exn
-      |> List.map ~f:(fun xs ->
-          priority_select
-          @@ List.map2_exn incr_mask xs ~f:(fun valid value ->
-              { With_valid.valid; value }))
-      |> List.map ~f:(fun x -> x.value)
+      get_next_config
+        ~cache:(List.map ~f:list_values config_cache)
+        ~coefs:(List.map ~f:list_values free_variables)
+        ~strides_log2 ~incr_mask
     in
 
     let next_config_cache =
@@ -548,14 +561,15 @@ module Solver = struct
                 when_ commands.null_space_valid
                   [
                     (let null_space = commands.null_space in
+                     let initial_config = get_initial_config null_space in
                      proc
                        [
                          list_assign
                            (List.concat free_variables)
                            null_space.free_variables;
-                         list_assign config null_space.constants;
+                         list_assign config initial_config;
                          List.map config_cache ~f:(fun row ->
-                             list_assign row null_space.constants)
+                             list_assign row initial_config)
                          |> proc;
                          list_assign upper_bounds null_space.upper_bounds;
                        ]);
@@ -590,8 +604,7 @@ module SolverCoordinator = struct
     type t = Idle | Busy [@@deriving sexp_of, compare ~localize, enumerate]
   end
 
-  let create (scope : Scope.t) ({ clock; clear; commands } : _ I.t) :
-      _ O.t =
+  let create (scope : Scope.t) ({ clock; clear; commands } : _ I.t) : _ O.t =
     let open Always in
     let spec = Reg_spec.create ~clock ~clear () in
 
