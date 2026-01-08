@@ -2,8 +2,8 @@ open! Base
 open! Hardcaml
 open! Signal
 
-let max_dim = 10
-let max_buttons = 13
+let max_dim = 4
+let max_buttons = 6
 let output_bits = 16
 let max_free_variables = 3
 let max_target = 400
@@ -35,7 +35,8 @@ module Parser = struct
   module I = I
 
   module O = struct
-    type 'a t = { valid : 'a; test_case : 'a TestCase.t } [@@deriving hardcaml]
+    type 'a t = { test_case_valid : 'a; test_case : 'a TestCase.t }
+    [@@deriving hardcaml]
   end
 
   module States = struct
@@ -121,7 +122,10 @@ module Parser = struct
           ];
       ];
 
-    { O.valid = sm.is Finalize; test_case = TestCase.Of_always.value accum }
+    {
+      O.test_case_valid = sm.is Finalize;
+      test_case = TestCase.Of_always.value accum;
+    }
 
   let hierarchical scope =
     let module Scoped = Hierarchy.In_scope (I) (O) in
@@ -131,7 +135,7 @@ end
 let add_mod x y =
   let rs x = uresize x 14 in
   let raw_sum = rs x +: rs y in
-  mux2 (msb raw_sum) (lsbs raw_sum +:. 1) (lsbs raw_sum)
+  mux2 (raw_sum >=:. 8191) (lsbs raw_sum -:. 8191) (lsbs raw_sum)
 
 let neg_mod x =
   let is_zero = x ==:. 0 in
@@ -173,6 +177,35 @@ module GaussianElimination = struct
         Z.powm (Z.of_int i) (Z.of_int @@ (modulo - 2)) (Z.of_int modulo)
         |> Z.to_int |> of_int ~width:elem_bits)
 
+  let test_case_to_matrix (test_case : _ TestCase.t) =
+    let columns = test_case.buttons |> List.map ~f:(split_lsb ~part_width:1) in
+    let rows = List.transpose_exn columns in
+    List.map2_exn rows test_case.target ~f:(fun row target ->
+        List.mapi (row @ [ gnd ]) ~f:(fun col cell ->
+            mux2
+              (test_case.num_buttons ==:. col)
+              (uresize target elem_bits) (uresize cell elem_bits)))
+
+  let find_pivot rows ignore_mask =
+    let head = List.map rows ~f:List.hd_exn in
+    let head_non_zero = List.map head ~f:(fun x -> x <>:. 0) in
+    let priority_bits =
+      List.map2_exn head_non_zero ignore_mask ~f:(fun non_zero ignore ->
+          non_zero &: ( ~: ) ignore)
+    in
+    priority_select
+    @@ List.mapi priority_bits ~f:(fun idx valid ->
+        let value = of_int idx ~width:(address_bits_for max_dim) in
+        { With_valid.valid; value })
+
+  let assign_to_matrix registers matrix =
+    let open Always in
+    List.map2_exn registers matrix ~f:(fun reg_row mat_row ->
+        List.map2_exn reg_row mat_row ~f:(fun reg_cell mat_cell ->
+            reg_cell <-- mat_cell)
+        |> proc)
+    |> proc
+
   module States = struct
     type t =
       | Idle
@@ -190,35 +223,38 @@ module GaussianElimination = struct
     let open Always in
     let sm = State_machine.create (module States) spec in
 
+    (* Input Fifo *)
     let%hw_var read_enable = Variable.wire ~default:gnd in
     let fifo =
-      Fifo.create ~showahead:true ~clock ~clear ~wr:commands.valid
+      Fifo.create ~showahead:true ~clock ~clear ~wr:commands.test_case_valid
         ~d:(TestCase.Of_signal.pack commands.test_case)
         ~rd:read_enable.value ~capacity:max_test_cases ()
     in
 
+    (* State variables *)
     let%hw_var num_columns =
       Variable.reg spec ~width:(address_bits_for max_buttons)
     in
-    let matrix =
+    let done_mask =
+      List.init max_dim ~f:(fun _ -> Variable.reg spec ~width:1)
+    in
+    let done_val = List.map ~f:Variable.value done_mask in
+    let rows =
       List.init max_dim ~f:(fun _ ->
-          List.init max_buttons ~f:(fun _ -> Variable.reg spec ~width:elem_bits))
+          List.init (max_buttons + 1) ~f:(fun _ ->
+              Variable.reg spec ~width:elem_bits))
+    in
+    let rows_val = List.map rows ~f:(List.map ~f:Variable.value) in
+    let curr_column =
+      List.map rows ~f:(fun row -> List.hd_exn row |> Variable.value)
     in
 
-    let target =
-      List.init max_dim ~f:(fun _ -> Variable.reg spec ~width:elem_bits)
-    in
-
-    let pivot_index = Variable.reg spec ~width:(address_bits_for max_dim) in
-
+    (* Temporary pivot holder *)
+    let pivot_idx_reg = Variable.reg spec ~width:(address_bits_for max_dim) in
     let pivot_row =
-      List.init max_buttons ~f:(fun _ -> Variable.reg spec ~width:elem_bits)
+      List.init (max_buttons + 1) ~f:(fun _ ->
+          Variable.reg spec ~width:elem_bits)
     in
-    let pivot_target = Variable.reg spec ~width:elem_bits in
-
-    let get_column = List.map matrix ~f:(fun row -> List.hd_exn row) in
-
-    let%hw_var done_mask = Variable.reg spec ~width:max_dim in
 
     let accum = NullSpace.Of_always.reg spec in
     let output_valid = Variable.reg spec ~width:1 in
@@ -229,8 +265,18 @@ module GaussianElimination = struct
     let pop_column =
       proc
         [
-          List.map matrix ~f:(Fn.flip Util.shift_pop (zero elem_bits)) |> proc;
+          List.map rows ~f:(Fn.flip Util.shift_pop (zero elem_bits)) |> proc;
           num_columns <-- num_columns.value -:. 1;
+        ]
+    in
+
+    let reset =
+      proc
+        [
+          num_columns <--. 0;
+          List.map done_mask ~f:(fun r -> r <-- gnd) |> proc;
+          output_valid <-- gnd;
+          NullSpace.Of_always.assign accum (NullSpace.Of_signal.of_int 0);
         ]
     in
 
@@ -240,24 +286,16 @@ module GaussianElimination = struct
           [
             ( Idle,
               [
-                output_valid <-- gnd;
-                NullSpace.Of_always.assign accum (NullSpace.Of_signal.of_int 0);
+                reset;
                 when_ (( ~: ) fifo.empty)
                   [
+                    (* Read value from the FIFO *)
                     read_enable <-- vdd;
                     (let test_case = TestCase.Of_signal.unpack fifo.q in
                      proc
                        [
+                         test_case_to_matrix test_case |> assign_to_matrix rows;
                          num_columns <-- test_case.num_buttons;
-                         List.map2_exn target test_case.target ~f:(fun r x ->
-                             r <-- x)
-                         |> proc;
-                         List.map2_exn (List.transpose_exn matrix)
-                           test_case.buttons ~f:(fun rs xs ->
-                             List.map2_exn rs (split_lsb ~part_width:1 xs)
-                               ~f:(fun r x -> r <-- uresize x elem_bits)
-                             |> proc)
-                         |> proc;
                        ]);
                     sm.set_next Select_pivot;
                   ];
@@ -267,52 +305,31 @@ module GaussianElimination = struct
                 if_ (num_columns.value ==:. 0)
                   [
                     output_valid <-- vdd;
-                    done_mask <--. 0;
                     (* Update the constants *)
-                    List.map2_exn accum.constants target ~f:(fun x y ->
-                        x <-- Variable.value y)
-                    |> proc;
+                    List.map2_exn accum.constants curr_column ~f:( <-- ) |> proc;
                     sm.set_next Idle;
                   ]
                   [
                     (* Get pivot index *)
-                    (let mask =
-                       List.map get_column ~f:(fun x -> x.value <>:. 0)
-                       |> List.map2_exn
-                            (split_lsb ~part_width:1 done_mask.value)
-                            ~f:(fun is_non_zero is_done ->
-                              is_non_zero &: ( ~: ) is_done)
-                     in
-                     let pivot_idx =
-                       priority_select
-                       @@ List.mapi mask ~f:(fun idx valid ->
-                           {
-                             With_valid.valid;
-                             value =
-                               of_int idx ~width:(address_bits_for max_dim);
-                           })
-                     in
+                    (let pivot_idx = find_pivot rows_val done_val in
                      if_ pivot_idx.valid
                        [
                          (* Update done mask *)
-                         done_mask
-                         <-- (done_mask.value
-                             |: (binary_to_onehot pivot_idx.value
-                                |> Fn.flip uresize max_dim));
-                         pivot_index <-- pivot_idx.value;
-                         (* Extract pivot row + target *)
+                         List.mapi done_mask ~f:(fun i r ->
+                             when_ (pivot_idx.value ==:. i) [ r <-- vdd ])
+                         |> proc;
+                         pivot_idx_reg <-- pivot_idx.value;
+                         (* Extract the pivot row *)
                          (let source_row =
-                            List.map (List.transpose_exn matrix) ~f:(fun col ->
-                                mux pivot_idx.value
-                                  (List.map col ~f:Variable.value))
+                            List.map
+                              (List.transpose_exn rows_val)
+                              ~f:(mux pivot_idx.value)
                           in
                           proc
                             [
+                              (* Copy the row to the pivot row registers *)
                               List.map2_exn pivot_row source_row ~f:( <-- )
                               |> proc;
-                              pivot_target
-                              <-- mux pivot_idx.value
-                                    (List.map target ~f:Variable.value);
                               (* Retrieve the multiplicative inverse from ROM *)
                               mul_inverse_address <-- List.hd_exn source_row;
                             ]);
@@ -323,19 +340,17 @@ module GaussianElimination = struct
               ] );
             ( Normalize_pivot,
               [
-                List.map (pivot_target :: pivot_row) ~f:(fun elem ->
+                List.map pivot_row ~f:(fun elem ->
                     elem <-- mul_mod elem.value mul_inverse_data)
                 |> proc;
                 sm.set_next Eliminate;
               ] );
             ( Eliminate,
               [
-                List.mapi (List.zip_exn matrix target)
-                  ~f:(fun i (partial_row, t) ->
-                    let row = t :: partial_row in
-                    let head = List.hd_exn partial_row |> Variable.value in
-                    let pivot_row = pivot_target :: pivot_row in
-                    if_ (pivot_index.value ==:. i)
+                List.mapi rows ~f:(fun i row ->
+                    let head = List.hd_exn row |> Variable.value in
+                    if_
+                      (pivot_idx_reg.value ==:. i)
                       [
                         List.map2_exn row pivot_row ~f:(fun r x ->
                             r <-- x.value)
@@ -355,11 +370,10 @@ module GaussianElimination = struct
                 (* Pop from the head of the matrix *)
                 pop_column;
                 (* Push to the free variables *)
-                (let frees = [ accum.f1; accum.f2; accum.f3 ] in
-                 List.map2_exn
-                   (List.map get_column ~f:Variable.value)
-                   (List.transpose_exn frees) ~f:Util.shift_push
-                 |> proc);
+                (let frees =
+                   [ accum.f1; accum.f2; accum.f3 ] |> List.transpose_exn
+                 in
+                 List.map2_exn curr_column frees ~f:Util.shift_push |> proc);
                 sm.set_next Select_pivot;
               ] );
           ];
@@ -374,13 +388,14 @@ module GaussianElimination = struct
     Scoped.hierarchical ~scope ~name:"ge" create
 end
 
-module O = struct
-  type 'a t = { part2 : 'a [@bits output_bits] } [@@deriving hardcaml]
-end
+module O = GaussianElimination.O
 
-let create (scope : Scope.t) (_ : _ I.t) : _ O.t =
-  ignore scope;
-  { part2 = gnd }
+let create (scope : Scope.t) ({ clock; clear; _ } as input : _ I.t) : _ O.t =
+  let parser = Parser.hierarchical scope input in
+  let gaussian_elim =
+    GaussianElimination.hierarchical scope { clock; clear; commands = parser }
+  in
+  gaussian_elim
 
 let hierarchical scope =
   let module Scoped = Hierarchy.In_scope (I) (O) in
