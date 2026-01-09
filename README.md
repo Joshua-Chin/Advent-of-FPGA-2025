@@ -53,6 +53,8 @@ The Gaussian elimination circuit requires `dimensions` cycles to compute.
 However, every input line concludes with data for Part 2 (e.g. `{3,5,4,7}`), which takes at least `2 * dimensions` cycles to parse.
 By running the Gaussian elimination circuit concurrently with the Part 2 parsing, its latency is fully masked, guaranteeing it is available before the next problem starts.
 
+### Day 10, Part 2
+
 ### Day 2
 This problem asks us to compute the number of n-repeats in a list of ranges.
 
