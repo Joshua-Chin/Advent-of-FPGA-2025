@@ -51,9 +51,39 @@ Because the number of free variables is small (less than 5 over my puzzle input)
 My design avoids buffering / backpressure logic by exploiting the input format.
 The Gaussian elimination circuit requires `dimensions` cycles to compute.
 However, every input line concludes with data for Part 2 (e.g. `{3,5,4,7}`), which takes at least `2 * dimensions` cycles to parse.
-By running the Gaussian elimination circuit concurrently with the Part 2 parsing, its latency is fully masked, guaranteeing it is available before the next problem starts.
+By running the Gaussian elimination circuit concurrently with input for part 2, its latency is fully masked, guaranteeing it is available before the next problem starts.
 
 ### Day 10, Part 2
+
+The problem asks for the minimal Hamming weight solution to a system of linear equations over the integers.
+Each variable is a non-negative integer with 0-1 coefficients.
+
+From observation, we see that there are up to 13 variables, 10 equations, and the constant terms are in the range `[0, 400]`.
+Note that because each variable is non-negative with 0-1 coefficients we can bound them from above by the constant terms.
+
+I use a similar approach to part 1, performing Gaussian elimination then brute forcing the search space.
+Instead of performing fraction-free Gauss-Jordan elimination over the integers, I perform Gaussian elimination over `GF(8191)`.
+Computing the Gaussian elimination over a finite field makes the math much easier, avoiding GCD calculating and potentially very large intermediate values.
+If all variables are in the range `[0, 400]`, then a solution over `GF(8191)` is also a solution over the integers.
+
+> Proof: If $x$ is a solution over $GF(8191)$, then we have $Ax - b \equiv 0 \mod{8191}$.
+This is equivalent to $Ax - b + 8191y = 0$ for some integer $y$.
+Because $a,b$ are in the range $[0, 400]$ and there are up to $13$ variables, The LHS of the system $Ax-b$ is in the range $[-400, 5200]$.
+Because $5200 < 8191$, $y = 0$, $Ax - b = 0$, and $x$ is a solution over the integers.
+
+I selected `8191` as the modulus because it is the Mersenne prime $2^{13} - 1$. This makes applying the modulus on the result of multiplication and addition very straightforward.
+
+In the Gaussian elimination circuit, I have a setup similar to part 1, where the matrix is stored in a set of shift buffers, with each representing a row. Division is handled by a lookup into a ROM containing the precomputed modular inverse.
+
+In the exploration of the search space, I use a differential approach, updating the previous values of the dependent variables incrementally instead of recomputing them at each iteration.
+This lets me avoid the use of any DSP slices in the search, allowing a greater degree of parallelism..
+I also need to check that each variable is in the proper range during the search.
+As an optimization, I check if each variable is less than `512`; the proof works similarly (`6656 < 8191`).
+
+Because the search space is quite large, I parallelize it over multiple instances of the searcher. 
+Each solver is given an offset and a stride over the valid range of the first free variable.
+I instantiated 32 solvers, reducing the number of cycles by over 20x on my set of test cases.
+I choose a power of two stride, because multiplying by a power of 2 modulo 8191 is a simple circular bit shift.
 
 ### Day 2
 This problem asks us to compute the number of n-repeats in a list of ranges.
