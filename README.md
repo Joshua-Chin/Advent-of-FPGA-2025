@@ -58,8 +58,8 @@ By running the Gaussian elimination circuit concurrently with input for part 2, 
 The problem asks for the minimal Hamming weight solution to a system of linear equations over the integers.
 Each variable is a non-negative integer with 0-1 coefficients.
 
-From observation, we see that there are up to 13 variables, 10 equations, and the constant terms are in the range `[0, 400]`.
-Note that because each variable is non-negative with 0-1 coefficients we can bound them from above by the constant terms.
+From observation, I see that there are up to 13 variables, 10 equations, and the constant terms are in the range `[0, 400]`.
+Note that because each variable is non-negative with 0-1 coefficients I can bound them from above by the constant terms.
 
 I use a similar approach to part 1, performing Gaussian elimination then brute forcing the search space.
 Instead of performing fraction-free Gauss-Jordan elimination over the integers, I perform Gaussian elimination over `GF(8191)`.
@@ -94,9 +94,9 @@ Because the range for each solver is bounded by powers of 10, I implemented my o
 
 For part 1, which asks for only 2-repeats, I simply instantiated separate instances for each digit count up to the maximum, and computed the sum.
 
-For part 2, we can instantiate separate instances for each digit count and divisor of that digit count.
-However, we need to avoid overcounting by performing inclusion-exclusion on the divisors.
-Conveniently, we can apply a Mobius transform on the inclusion exclusion calculation to simplify the pre-computation of the coefficients.
+For part 2, I instantiate separate instances for each digit count and divisor of that digit count.
+However, I need to avoid overcounting by performing inclusion-exclusion on the divisors.
+I apply a Mobius transform on the inclusion exclusion calculation to simplify the pre-computation of the coefficients.
 My solution allows the user to set an arbitrary maximum digit count during generation, and will compute the coefficients on the fly.
 
 The output is a continuous stream, with a 7 cycle delay.
@@ -138,11 +138,11 @@ I maintain a line buffer in BRAM storing the number of paths and whether the cel
 I then run a sliding window as the input streams in.
 
 ### Day 8, Part 2
-While the problem description implies an edge-centric approach (Kruskal's algorithm), sorting O(N^2) edges is inefficient in hardware.
+While the problem description implies an edge-centric approach (Kruskal's algorithm), sorting `O(N**2)` edges is inefficient in hardware.
 Finding the last edge connected in Kruskal's algorithm is equivalent to finding the longest edge in the minimum spanning tree.
 Therefore, to improve the parallelism, I used Primm's algorithm, while tracking the largest edge added so far.
 
-We fully parallelize the distance computations, determining a new edge in the MST in a fixed number of clock cycles.
+I fully parallelize the distance computations, determining a new edge in the MST in a fixed number of clock cycles.
 This circuit runs in `O(n)` cycles, instead of the typical `O(n^2)` cycles that a Kruskal's algorithm approach might use.
 This approach represents a significant area vs latency tradeoff, using a very large number of DSP slices to minimize total runtime.
 If fewer DSP slices are available, we can instead process the edges in batches, maximizing the DSP slice usage while fitting on a more reasonably sized board.
@@ -160,3 +160,37 @@ At first, this problem appears to be a grid packing problem that will require an
 However, the test cases provided by Advent of Code are trivial.
 Either there are too many individual cells required to fit in the grid, or the grid can fit a number of 3x3 bounding boxes greater than or equal to the number of tiles.
 The solution solves each test case in a constant number of cycles.
+
+## Remaining Questions
+
+### Day 11
+This question asks to compute the number of paths in a sparse directly acyclic graph (DAG).
+This can be solved by a memoized DFS or a topological sort.
+It is unlikely for a solution in an FPGA to be faster than an equivalent CPU implementation.
+
+### Day 9, Part 2
+This question asks to compute the largest (by area) axis aligned rectangle on a grid, where the rectangle has two opposite corners that are vertices of a simple orthogonal polygon and contains only cells that are contained by the polygon.
+
+Many solutions rely on a simplifying assumption: a rectangle is valid if it does not intersect or contain any edges of the polygon. This is **insufficient** in the general case.
+
+The critical issue is that the 'edges' of the polygon are not 1D lines.
+They are 2D areas, with width one, filling in an area on the grid.
+Consider a polygon that "snakes" back and forth, filling a rectangular area.
+A rectangle defined by the outer corners of the rectangular area would be valid (it is contained in the hull), but it contains internal edges.
+
+The official test case is approximately a circle with a single rectangular concavity (a "C" shape).
+This 'nice' shape avoids hitting any edge cases.
+
+One correct approach for the general case is to perform coordinate compression on the coordinates of the vertices of the 2D areas generated by each edge.
+We then construct a binary matrix over the compressed coordinates, representing if a grid area is filled.
+We then compute the 2D prefix sum matrix over the binary matrix.
+Finally, we can iterate over pairs of points, and use the 2D prefix sum matrix to check each rectangle in constant time.
+
+### Day 8, Part 1
+This question provides a list of points. It asks to compute the product of the sizes of the 3 largest connected components, after connecting the 1000 closest pair of points.
+
+We can compute the distance for large batches of pairs per cycle, and only insert them into a 1000 element sorted array if they are less than the current largest distance in the array.
+For computing the sizes of the connected components, we can use union-find, with union by size.
+
+If we assume that the distances between pairs are independent and identically distributed, the probability of the `n`-th pair being inserted is roughly `1000 / n`.
+This reduces the number of insertions from `1000 ** 2 / 2` to (in expectation) `1000 * log2(1000) < 10000`.
