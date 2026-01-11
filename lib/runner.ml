@@ -96,5 +96,5 @@ module Make (M : AdventOfFPGASolution) = struct
       cycle_idx := !cycle_idx + 1
     done;
 
-    printf "Cycles: %d\n" (!cycle_idx - 1)
+    printf "Latency: %d cycle(s)\n" !cycle_idx
 end
