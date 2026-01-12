@@ -46,7 +46,7 @@ I also maintain a `done` mask over the rows to avoid swapping rows.
 
 The brute force stage receives the columns corresponding to the free variables, and the RHS constants.
 For a given configuration of free variables, computing the dependent variables is a simple matrix-vector product.
-Because the number of free variables is small (less than 5 over my puzzle input) , I instantiate an instance for each possible configuration of free variables.
+Because the number of free variables is small (less than 5 over my puzzle input), I instantiate an instance for each possible configuration of free variables.
 
 My design avoids buffering / backpressure logic by exploiting the input format.
 The Gaussian elimination circuit requires `dimensions` cycles to compute.
@@ -68,7 +68,7 @@ If all variables are in the range `[0, 400]`, then a solution over `GF(8191)` is
 
 > Proof: If $x$ is a solution over $GF(8191)$, then we have $Ax - b \equiv 0 \mod{8191}$.
 This is equivalent to $Ax - b + 8191y = 0$ for some integer $y$.
-Because $a,b$ are in the range $[0, 400]$ and there are up to $13$ variables, The LHS of the system $Ax-b$ is in the range $[-400, 5200]$.
+Because $a,b$ are in the range $[0, 400]$ and there are up to $13$ variables, the LHS of the system $Ax-b$ is in the range $[-400, 5200]$.
 Because $5200 < 8191$, $y = 0$, $Ax - b = 0$, and $x$ is a solution over the integers.
 
 I selected `8191` as the modulus because it is the Mersenne prime $2^{13} - 1$. This makes applying the modulus on the result of multiplication and addition very straightforward.
@@ -144,7 +144,7 @@ Therefore, to improve the parallelism, I used Primm's algorithm, while tracking 
 
 I fully parallelize the distance computations, determining a new edge in the MST in a fixed number of clock cycles.
 This circuit runs in `O(n)` cycles, instead of the typical `O(n^2)` cycles that a Kruskal's algorithm approach might use.
-This approach represents a significant area vs latency tradeoff, using a very large number of DSP slices to minimize total runtime.
+This approach represents a significant area vs latency tradeoff, utilizing a large number of DSP slices to minimize total runtime.
 If fewer DSP slices are available, we can instead process the edges in batches, maximizing the DSP slice usage while fitting on a more reasonably sized board.
 
 To reduce routing congestion, the points are stored both in registers and BRAM.
@@ -160,11 +160,12 @@ The maximum area rectangle must be formed by points on the convex hull, and for 
 
 ### Day 12
 At first, this problem appears to be a grid packing problem that will require an ILP / constraint satisfaction approach.
-However, the test cases provided by Advent of Code are trivial.
+However, the test cases provided by Advent of Code allow for a simple constraint check.
 Either there are too many individual cells required to fit in the grid, or the grid can fit a number of 3x3 bounding boxes greater than or equal to the number of tiles.
 The solution solves each test case in a constant number of cycles.
 
-## Remaining Questions
+## Solution Outlines
+This sections describes solution outlines for questions that I did not implement circuits for.
 
 ### Day 8, Part 1
 This question provides a list of points. It asks to compute the product of the sizes of the 3 largest connected components, after connecting the 1000 closest pair of points.
