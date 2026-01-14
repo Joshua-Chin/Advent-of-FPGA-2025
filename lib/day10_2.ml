@@ -290,8 +290,10 @@ module GaussianElimination = struct
     let output_valid = Variable.reg spec ~width:1 in
 
     (* Multiplicative inverse ROM *)
-    let mul_inverse_address = Variable.reg spec ~width:elem_bits in
-    let mul_inverse_data = GF8191.mul_inverse mul_inverse_address.value in
+    let mul_inverse_address = Variable.wire ~default:(zero elem_bits) in
+    let mul_inverse_data =
+      reg spec @@ GF8191.mul_inverse mul_inverse_address.value
+    in
 
     let pop_column =
       proc
@@ -439,7 +441,7 @@ module Solver = struct
   end
 
   module O = struct
-    type 'a t = { solution_valid : 'a; solution : 'a [@bits elem_bits]; config: 'a list [@bits elem_bits] [@length max_dim] }
+    type 'a t = { solution_valid : 'a; solution : 'a [@bits elem_bits] }
     [@@deriving hardcaml]
   end
 
@@ -609,7 +611,7 @@ module Solver = struct
               ] );
           ];
       ];
-    { solution_valid = output_valid.value; solution = output.value; config = list_values config }
+    { solution_valid = output_valid.value; solution = output.value }
 
   let hierarchical ?(stride_log2 = 0) ?(offset = 0) scope =
     let module Scoped = Hierarchy.In_scope (I) (O) in
