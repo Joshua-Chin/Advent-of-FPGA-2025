@@ -76,7 +76,7 @@ I selected `8191` as the modulus because it is the Mersenne prime $2^{13} - 1$. 
 In the Gaussian elimination circuit, I have a setup similar to part 1, where the matrix is stored in a set of shift buffers, with each representing a row. Division is handled by a lookup into a ROM containing the precomputed modular inverse.
 
 In the exploration of the search space, I use a differential approach, updating the previous values of the dependent variables incrementally instead of recomputing them at each iteration.
-This lets me avoid the use of any DSP slices in the search, allowing a greater degree of parallelism..
+This lets me avoid the use of any DSP slices in the search, allowing a greater degree of parallelism.
 I also need to check that each variable is in the proper range during the search.
 As an optimization, I check if each variable is less than `512`; the proof works similarly (`6656 < 8191`).
 
